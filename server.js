@@ -256,62 +256,26 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
   try {
     console.log(`크롤링 시작: ${keyword}, ${startRank}~${endRank}위`);
     
-    // 1단계: 검색 결과에서 place ID 목록 추출 (RACAN 방식)
-    const proxy = getNextProxy();
-    const proxyUrl = `http://${proxy.auth.username}:${proxy.auth.password}@${proxy.host}:${proxy.port}`;
-    const agent = new HttpsProxyAgent(proxyUrl);
+    // 1단계: 검색 결과에서 place ID 목록 추출 (페이징 포함)
+    const allPlaceIds = [];
+    const maxPages = Math.ceil(endRank / 50); // 페이지당 약 50개
     
-    const searchUrl = `https://m.map.naver.com/search2/search.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5`;
-    console.log(`검색 URL: ${searchUrl}`);
-    
-    const searchResponse = await axios.get(searchUrl, {
-      httpsAgent: agent,
-      timeout: 30000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'ko-KR,ko;q=0.9',
-      }
-    });
-    
-    const html = searchResponse.data;
-    console.log(`HTML 길이: ${html.length}자`);
-    
-    // Place ID 추출 (RACAN 방식)
-    const idPattern = /sid[=:][\s"']*(\d{8,})/gi;
-    const idPattern2 = /place\/(\d{8,})/gi;
-    const idPattern3 = /"id"\s*:\s*"?(\d{8,})"?/gi;
-    
-    const allIds = [];
-    let match;
-    
-    while ((match = idPattern.exec(html)) !== null) allIds.push(match[1]);
-    while ((match = idPattern2.exec(html)) !== null) allIds.push(match[1]);
-    while ((match = idPattern3.exec(html)) !== null) allIds.push(match[1]);
-    
-    // 중복 제거하면서 순서 유지
-    const placeIds = [...new Set(allIds)];
-    console.log(`발견된 Place ID: ${placeIds.length}개`);
-    console.log(`처음 10개: ${placeIds.slice(0, 10).join(', ')}`);
-    
-    // 2단계: 각 place ID의 상세 정보 가져오기
-    const results = [];
-    const targetIds = placeIds.slice(startRank - 1, endRank);
-    
-    for (let i = 0; i < targetIds.length; i++) {
-      const placeId = targetIds[i];
-      const rank = startRank + i;
+    for (let page = 1; page <= maxPages && allPlaceIds.length < endRank; page++) {
+      const proxy = getNextProxy();
+      const proxyUrl = `http://${proxy.auth.username}:${proxy.auth.password}@${proxy.host}:${proxy.port}`;
+      const agent = new HttpsProxyAgent(proxyUrl);
+      
+      // 페이징 URL
+      const searchUrl = page === 1 
+        ? `https://m.map.naver.com/search2/search.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5`
+        : `https://m.map.naver.com/search2/searchMore.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5&page=${page}`;
+      
+      console.log(`검색 페이지 ${page} 요청...`);
       
       try {
-        const detailProxy = getNextProxy();
-        const detailProxyUrl = `http://${detailProxy.auth.username}:${detailProxy.auth.password}@${detailProxy.host}:${detailProxy.port}`;
-        const detailAgent = new HttpsProxyAgent(detailProxyUrl);
-        
-        const detailUrl = `https://m.place.naver.com/place/${placeId}/home`;
-        
-        const detailResponse = await axios.get(detailUrl, {
-          httpsAgent: detailAgent,
-          timeout: 15000,
+        const searchResponse = await axios.get(searchUrl, {
+          httpsAgent: agent,
+          timeout: 20000,
           headers: {
             'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -319,58 +283,155 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
           }
         });
         
-        const detailHtml = detailResponse.data;
+        const html = searchResponse.data;
         
-        // Apollo State에서 데이터 추출
-        let name = '', tel = '', address = '', category = '';
+        // Place ID 추출
+        const idPatterns = [
+          /sid[=:][\s"']*(\d{8,})/gi,
+          /place\/(\d{8,})/gi,
+          /"id"\s*:\s*"?(\d{8,})"?/gi,
+          /data-id="(\d{8,})"/gi,
+          /"placeId"\s*:\s*"?(\d{8,})"?/gi
+        ];
         
-        const apolloMatch = detailHtml.match(/window\.__APOLLO_STATE__\s*=\s*({.+?});?\s*<\/script>/s);
-        if (apolloMatch) {
-          try {
-            const apolloData = JSON.parse(apolloMatch[1]);
-            const placeKey = Object.keys(apolloData).find(k => k.startsWith('PlaceDetailBase:'));
-            if (placeKey && apolloData[placeKey]) {
-              const place = apolloData[placeKey];
-              name = place.name || '';
-              address = place.roadAddress || place.address || '';
-              category = place.category || '';
-              tel = place.phone || place.virtualPhone || '';
+        const pageIds = [];
+        for (const pattern of idPatterns) {
+          let match;
+          while ((match = pattern.exec(html)) !== null) {
+            if (!pageIds.includes(match[1]) && !allPlaceIds.includes(match[1])) {
+              pageIds.push(match[1]);
             }
-          } catch (e) {
-            console.log(`Apollo 파싱 실패 (${placeId})`);
           }
         }
         
-        // Apollo 실패시 OG 태그에서 추출
-        if (!name) {
-          const ogTitleMatch = detailHtml.match(/<meta[^>]*property="og:title"[^>]*content="([^"]*)"/) ||
-                               detailHtml.match(/<meta[^>]*content="([^"]*)"[^>]*property="og:title"/);
-          if (ogTitleMatch) {
-            name = ogTitleMatch[1].split(':')[0].split('-')[0].split('|')[0].trim();
+        allPlaceIds.push(...pageIds);
+        console.log(`페이지 ${page}: ${pageIds.length}개 발견 (총 ${allPlaceIds.length}개)`);
+        
+        if (pageIds.length === 0) break; // 더 이상 결과 없음
+        
+      } catch (e) {
+        console.log(`페이지 ${page} 실패: ${e.message}`);
+        break;
+      }
+      
+      await new Promise(r => setTimeout(r, 200));
+    }
+    
+    console.log(`총 Place ID: ${allPlaceIds.length}개`);
+    
+    // 2단계: 상세 정보 가져오기 (병렬 처리 - 5개씩)
+    const targetIds = allPlaceIds.slice(startRank - 1, endRank);
+    const results = [];
+    const BATCH_SIZE = 5; // 동시 요청 수
+    
+    for (let i = 0; i < targetIds.length; i += BATCH_SIZE) {
+      const batch = targetIds.slice(i, i + BATCH_SIZE);
+      
+      const batchPromises = batch.map(async (placeId, idx) => {
+        const rank = startRank + i + idx;
+        
+        try {
+          const detailProxy = getNextProxy();
+          const detailProxyUrl = `http://${detailProxy.auth.username}:${detailProxy.auth.password}@${detailProxy.host}:${detailProxy.port}`;
+          const detailAgent = new HttpsProxyAgent(detailProxyUrl);
+          
+          const detailUrl = `https://m.place.naver.com/place/${placeId}/home`;
+          
+          const detailResponse = await axios.get(detailUrl, {
+            httpsAgent: detailAgent,
+            timeout: 10000,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            }
+          });
+          
+          const html = detailResponse.data;
+          let name = '', tel = '', address = '', category = '';
+          
+          // Apollo State 파싱
+          const apolloMatch = html.match(/window\.__APOLLO_STATE__\s*=\s*({.+?});?\s*<\/script>/s);
+          if (apolloMatch) {
+            try {
+              const apolloData = JSON.parse(apolloMatch[1]);
+              
+              // PlaceDetailBase 찾기
+              for (const key of Object.keys(apolloData)) {
+                if (key.startsWith('PlaceDetailBase:')) {
+                  const place = apolloData[key];
+                  name = place.name || '';
+                  address = place.roadAddress || place.address || '';
+                  category = Array.isArray(place.category) ? place.category.join(' > ') : (place.category || '');
+                  break;
+                }
+              }
+              
+              // 전화번호 찾기 (여러 키에서)
+              for (const key of Object.keys(apolloData)) {
+                const obj = apolloData[key];
+                if (obj && typeof obj === 'object') {
+                  if (obj.phone && !tel) tel = obj.phone;
+                  if (obj.virtualPhone && !tel) tel = obj.virtualPhone;
+                  if (obj.tel && !tel) tel = obj.tel;
+                  if (obj.phoneNumber && !tel) tel = obj.phoneNumber;
+                }
+              }
+            } catch (e) {}
           }
+          
+          // 전화번호 백업 추출 (HTML에서 직접)
+          if (!tel) {
+            const telPatterns = [
+              /"phone"\s*:\s*"([^"]+)"/,
+              /"virtualPhone"\s*:\s*"([^"]+)"/,
+              /"tel"\s*:\s*"([^"]+)"/,
+              /전화<\/span><[^>]*>([0-9\-]+)/,
+              /href="tel:([^"]+)"/,
+              /(\d{2,4}-\d{3,4}-\d{4})/
+            ];
+            for (const pattern of telPatterns) {
+              const match = html.match(pattern);
+              if (match && match[1]) {
+                tel = match[1];
+                break;
+              }
+            }
+          }
+          
+          // 이름 백업 추출
+          if (!name) {
+            const nameMatch = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]*)"/) ||
+                             html.match(/<title>([^<]+)</);
+            if (nameMatch) {
+              name = nameMatch[1].split(':')[0].split('-')[0].split('|')[0].trim();
+            }
+          }
+          
+          return { rank, name, tel, address, category, placeId };
+          
+        } catch (e) {
+          return { rank, name: '', tel: '', address: '', category: '', placeId };
         }
-        
-        // 전화번호 추출 (여러 패턴)
-        if (!tel) {
-          const telMatch = detailHtml.match(/"phone"\s*:\s*"([^"]+)"/) ||
-                          detailHtml.match(/"tel"\s*:\s*"([^"]+)"/) ||
-                          detailHtml.match(/전화[^\d]*(\d{2,4}-\d{3,4}-\d{4})/);
-          if (telMatch) tel = telMatch[1];
-        }
-        
-        results.push({ rank, name, tel, address, category, placeId });
-        console.log(`[${rank}] ${name || placeId} - ${tel || '번호없음'}`);
-        
-        // 요청 간격
-        if (i < targetIds.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
-        
-      } catch (detailError) {
-        console.log(`상세 정보 실패 (${placeId}): ${detailError.message}`);
-        results.push({ rank, name: '', tel: '', address: '', category: '', placeId });
+      });
+      
+      const batchResults = await Promise.all(batchPromises);
+      results.push(...batchResults);
+      
+      // 진행 상황 로그
+      console.log(`진행: ${Math.min(i + BATCH_SIZE, targetIds.length)}/${targetIds.length}`);
+      
+      // 배치 간 딜레이
+      if (i + BATCH_SIZE < targetIds.length) {
+        await new Promise(r => setTimeout(r, 100));
       }
     }
+    
+    // 순위순 정렬
+    results.sort((a, b) => a.rank - b.rank);
+    
+    // 성공한 것만 카운트
+    const successResults = results.filter(r => r.name);
+    console.log(`크롤링 완료: ${results.length}건 (정보있음: ${successResults.length}건)`);
     
     const usedPoints = results.length;
     const newPoints = user.points - usedPoints;
@@ -379,8 +440,6 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
     db.prepare('INSERT INTO point_history (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(
       req.user.userId, -usedPoints, 'use', `플레이스 추출: ${keyword} (${results.length}건)`
     );
-    
-    console.log(`크롤링 완료: ${results.length}건`);
     
     res.json({
       success: true,
