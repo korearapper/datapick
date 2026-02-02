@@ -1,5 +1,5 @@
 {
-  "name": "place-extractor",
+  "name": "datapick-place-extractor",
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
