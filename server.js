@@ -283,17 +283,38 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       });
       
       const data = response.data;
-      const places = data?.result?.place?.list || [];
       
-      for (const place of places) {
-        const rank = start + places.indexOf(place);
+      // 다양한 응답 구조 대응
+      let places = [];
+      
+      // 디버깅: 응답 구조 확인
+      console.log(`응답 키: ${Object.keys(data || {}).join(', ')}`);
+      if (data?.result) {
+        console.log(`result 키: ${Object.keys(data.result || {}).join(', ')}`);
+      }
+      
+      if (data?.result?.place?.list) {
+        places = data.result.place.list;
+      } else if (data?.result?.list) {
+        places = data.result.list;
+      } else if (data?.place?.list) {
+        places = data.place.list;
+      } else if (Array.isArray(data?.result)) {
+        places = data.result;
+      }
+      
+      console.log(`페이지 ${page} 응답: ${places.length}개 업체`);
+      
+      for (let i = 0; i < places.length; i++) {
+        const place = places[i];
+        const rank = start + i;
         if (rank >= startRank && rank <= endRank) {
           results.push({
             rank,
-            name: place.name || '',
-            tel: place.tel || place.phone || '',
-            address: place.roadAddress || place.address || '',
-            category: place.category ? place.category.join(' > ') : ''
+            name: place.name || place.title || '',
+            tel: place.tel || place.phone || place.virtualTel || '',
+            address: place.roadAddress || place.address || place.fullAddress || '',
+            category: Array.isArray(place.category) ? place.category.join(' > ') : (place.category || place.categoryName || '')
           });
         }
       }
