@@ -9,6 +9,9 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Railway 프록시 환경 대응
+app.set('trust proxy', 1);
+
 // Database 초기화
 const db = new Database('database.db');
 
@@ -78,9 +81,14 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(session({
   secret: 'place-extractor-secret-key-2024',
-  resave: false,
+  resave: true,
   saveUninitialized: false,
-  cookie: { maxAge: 24 * 60 * 60 * 1000 } // 24시간
+  cookie: { 
+    maxAge: 24 * 60 * 60 * 1000,
+    secure: false,
+    httpOnly: true,
+    sameSite: 'lax'
+  }
 }));
 
 // 인증 미들웨어
