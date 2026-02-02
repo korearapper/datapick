@@ -182,31 +182,92 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
           const dHtml = dRes.data;
           let name = '', tel = '', address = '', category = '';
 
-          // __APOLLO_STATE__ 파싱
+          // 방법1: __APOLLO_STATE__ 파싱
           const am = dHtml.match(/__APOLLO_STATE__\s*=\s*({.+?});?\s*<\/script>/s);
           if (am) {
             try {
               const ad = JSON.parse(am[1]);
               for (const k of Object.keys(ad)) {
                 const o = ad[k];
-                if (o && typeof o === 'object') {
-                  if (!name && o.name && typeof o.name === 'string') name = o.name;
-                  if (!address && (o.roadAddress || o.address)) address = o.roadAddress || o.address;
-                  if (!category && o.category) category = Array.isArray(o.category) ? o.category.join(' > ') : o.category;
-                  if (!tel) tel = o.phone || o.tel || o.virtualPhone || '';
+                if (!o || typeof o !== 'object') continue;
+                
+                // PlaceBase 또는 메인 엔트리 찾기
+                if (k.startsWith('PlaceSummary') || k.startsWith('PlaceBase') || k === 'ROOT_QUERY') continue;
+                
+                // 이름: name 필드가 문자열이고 2자 이상
+                if (!name && o.name && typeof o.name === 'string' && o.name.length >= 2 && !o.name.startsWith('http')) {
+                  name = o.name;
+                }
+                // 주소
+                if (!address) {
+                  if (o.roadAddress && typeof o.roadAddress === 'string') address = o.roadAddress;
+                  else if (o.address && typeof o.address === 'string' && o.address.length > 5) address = o.address;
+                }
+                // 카테고리
+                if (!category) {
+                  if (Array.isArray(o.category) && o.category.length > 0) category = o.category.join(' > ');
+                  else if (typeof o.category === 'string' && o.category.length > 0) category = o.category;
+                  else if (Array.isArray(o.categoryPath) && o.categoryPath.length > 0) category = o.categoryPath.join(' > ');
+                }
+                // 전화
+                if (!tel) {
+                  tel = o.phone || o.tel || o.virtualPhone || o.virtualTel || o.phoneNumber || '';
                 }
               }
             } catch (e) {}
           }
-          // 백업
+
+          // 방법2: JSON-LD (schema.org)
+          if (!name) {
+            const ldMatch = dHtml.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/);
+            if (ldMatch) {
+              try {
+                const ld = JSON.parse(ldMatch[1]);
+                if (!name && ld.name) name = ld.name;
+                if (!address && ld.address) address = typeof ld.address === 'string' ? ld.address : (ld.address.streetAddress || '');
+                if (!tel && ld.telephone) tel = ld.telephone;
+              } catch (e) {}
+            }
+          }
+
+          // 방법3: og:title
+          if (!name) {
+            const ogMatch = dHtml.match(/<meta\s+property="og:title"\s+content="([^"]+)"/);
+            if (ogMatch) {
+              name = ogMatch[1].replace(/\s*[:·\-|].*/g, '').trim();
+            }
+          }
+          // 방법4: <title> 태그
+          if (!name) {
+            const titleMatch = dHtml.match(/<title>([^<]+)<\/title>/);
+            if (titleMatch) {
+              name = titleMatch[1].replace(/\s*[:·\-|].*/g, '').trim();
+            }
+          }
+
+          // 방법5: 전화번호 백업 추출
           if (!tel) {
-            for (const tp of [/"phone":"([^"]+)"/, /"tel":"([^"]+)"/, /href="tel:([^"]+)"/]) {
+            for (const tp of [/"phone"\s*:\s*"([^"]+)"/, /"tel"\s*:\s*"([^"]+)"/, /"virtualPhone"\s*:\s*"([^"]+)"/, /"virtualTel"\s*:\s*"([^"]+)"/, /href="tel:([^"]+)"/]) {
               const tm = dHtml.match(tp); if (tm) { tel = tm[1]; break; }
             }
           }
-          if (!name) {
-            const nm = dHtml.match(/<meta\s+property="og:title"\s+content="([^"]+)"/);
-            if (nm) name = nm[1].split(':')[0].split('-')[0].trim();
+
+          // 방법6: 주소 백업
+          if (!address) {
+            const addrMatch = dHtml.match(/"roadAddress"\s*:\s*"([^"]+)"/) || dHtml.match(/"address"\s*:\s*"([^"]{10,})"/);
+            if (addrMatch) address = addrMatch[1];
+          }
+
+          // 방법7: 카테고리 백업
+          if (!category) {
+            const catMatch = dHtml.match(/"category"\s*:\s*\[([^\]]+)\]/);
+            if (catMatch) {
+              try { category = JSON.parse('[' + catMatch[1] + ']').join(' > '); } catch(e) {}
+            }
+            if (!category) {
+              const catMatch2 = dHtml.match(/"category"\s*:\s*"([^"]+)"/);
+              if (catMatch2) category = catMatch2[1];
+            }
           }
           return { rank, name, tel, address, category, placeId: pid };
         } catch (e) {
