@@ -285,111 +285,76 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       await page.setViewport({ width: 1920, height: 1080 });
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
       
-      // 네트워크 요청 인터셉트 설정
-      await page.setRequestInterception(true);
-      
-      page.on('request', request => {
-        request.continue();
-      });
-      
-      // 모든 API 응답 캡처하여 누적
-      page.on('response', async response => {
-        const url = response.url();
-        if (url.includes('allSearch') || url.includes('place/list') || url.includes('search?')) {
-          try {
-            const text = await response.text();
-            const json = JSON.parse(text);
-            
-            const placeList = json?.result?.place?.list || json?.result?.list || [];
-            
-            if (placeList.length > 0) {
-              console.log('API 응답 캡처: ' + placeList.length + '개');
-              
-              for (const item of placeList) {
-                const placeId = String(item.id || item.sid || '');
-                if (placeId && !capturedIds.has(placeId)) {
-                  capturedIds.add(placeId);
-                  allPlaceData.push({
-                    placeId: placeId,
-                    name: item.name || item.title || '',
-                    tel: item.tel || item.phone || item.virtualPhone || '',
-                    category: Array.isArray(item.category) ? item.category.join(' > ') : (item.category || ''),
-                    address: item.roadAddress || item.address || ''
-                  });
-                }
-              }
-              console.log('누적: ' + allPlaceData.length + '개');
-            }
-          } catch (e) {}
-        }
-      });
-      
+      // 먼저 메인 페이지 방문 (쿠키/세션 설정)
       const searchUrl = 'https://map.naver.com/p/search/' + encodeURIComponent(keyword);
       console.log('페이지 이동: ' + searchUrl);
       
       await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      await new Promise(r => setTimeout(r, 3000));
       
-      // 첫 API 응답 대기
-      console.log('첫 API 응답 대기...');
-      for (let i = 0; i < 10; i++) {
-        if (allPlaceData.length > 0) break;
-        await new Promise(r => setTimeout(r, 1000));
-      }
+      // API 직접 호출로 페이지네이션
+      console.log('API 직접 호출 시작...');
       
-      console.log('첫 데이터: ' + allPlaceData.length + '개');
-      
-      // iframe 찾기
-      let frame = page;
-      const iframeHandle = await page.$('iframe#searchIframe');
-      if (iframeHandle) {
-        const contentFrame = await iframeHandle.contentFrame();
-        if (contentFrame) {
-          frame = contentFrame;
-          console.log('iframe 발견');
-        }
-      }
-      
-      // 스크롤로 추가 데이터 로드
-      console.log('스크롤 시작...');
-      let noChangeCount = 0;
-      
-      for (let scroll = 0; scroll < 30 && allPlaceData.length < endRank; scroll++) {
-        const prevCount = allPlaceData.length;
+      for (let pageNum = 1; pageNum <= 15 && allPlaceData.length < endRank; pageNum++) {
+        const apiUrl = 'https://map.naver.com/p/api/search/allSearch?query=' + encodeURIComponent(keyword) + 
+                      '&type=all&searchCoord=&boundary=&page=' + pageNum + '&displayCount=100&isPlaceRecommendationReplace=true&lang=ko';
         
-        // iframe 내부 스크롤
+        console.log('API 페이지 ' + pageNum + ' 호출...');
+        
         try {
-          await frame.evaluate(() => {
-            const scrollEl = document.querySelector('#_pcmap_list_scroll_container') ||
-                            document.querySelector('[class*="Ryr1F"]') ||
-                            document.querySelector('[data-naver-scrollable]') ||
-                            document.body;
-            if (scrollEl) {
-              scrollEl.scrollTop = scrollEl.scrollHeight;
-            }
-          });
-        } catch (e) {}
-        
-        // 메인 페이지도 스크롤
-        await page.evaluate(() => {
-          window.scrollTo(0, document.body.scrollHeight);
-        });
-        
-        await new Promise(r => setTimeout(r, 1500));
-        
-        console.log('스크롤 ' + (scroll + 1) + ': ' + allPlaceData.length + '개');
-        
-        if (allPlaceData.length === prevCount) {
-          noChangeCount++;
-          if (noChangeCount >= 5) {
-            console.log('더 이상 데이터 없음');
+          const response = await page.evaluate(async (url) => {
+            const res = await fetch(url, {
+              method: 'GET',
+              credentials: 'include',
+              headers: {
+                'Accept': 'application/json',
+                'Referer': 'https://map.naver.com/'
+              }
+            });
+            return await res.text();
+          }, apiUrl);
+          
+          const json = JSON.parse(response);
+          const placeList = json?.result?.place?.list || [];
+          
+          console.log('페이지 ' + pageNum + ': ' + placeList.length + '개');
+          
+          if (placeList.length === 0) {
+            console.log('더 이상 결과 없음');
             break;
           }
-        } else {
-          noChangeCount = 0;
+          
+          for (const item of placeList) {
+            const placeId = String(item.id || item.sid || '');
+            if (placeId && !capturedIds.has(placeId)) {
+              capturedIds.add(placeId);
+              allPlaceData.push({
+                placeId: placeId,
+                name: item.name || item.title || '',
+                tel: item.tel || item.phone || item.virtualPhone || '',
+                category: Array.isArray(item.category) ? item.category.join(' > ') : (item.category || ''),
+                address: item.roadAddress || item.address || ''
+              });
+            }
+          }
+          
+          console.log('누적: ' + allPlaceData.length + '개');
+          
+          // 결과가 100개 미만이면 마지막 페이지
+          if (placeList.length < 100) {
+            console.log('마지막 페이지');
+            break;
+          }
+          
+          await new Promise(r => setTimeout(r, 500));
+          
+        } catch (e) {
+          console.log('API 호출 실패: ' + e.message);
+          break;
         }
       }
       
-      console.log('브라우저 수집 완료: ' + allPlaceData.length + '개');
+      console.log('API 호출 완료: ' + allPlaceData.length + '개');
       
     } finally {
       await browser.close();
