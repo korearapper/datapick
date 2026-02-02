@@ -295,12 +295,42 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       // API 직접 호출로 페이지네이션
       console.log('API 직접 호출 시작...');
       
-      // 서울 중심 좌표 (기본값)
-      const searchCoord = '126.9783882;37.5666103';
+      // 페이지에서 현재 검색 좌표 추출 시도
+      let searchCoord = '';
+      try {
+        searchCoord = await page.evaluate(() => {
+          // URL에서 좌표 추출
+          const url = window.location.href;
+          const match = url.match(/c=([\d.]+),([\d.]+)/);
+          if (match) return match[1] + ';' + match[2];
+          
+          // 또는 전역 변수에서
+          if (window.__SEARCH_COORD__) return window.__SEARCH_COORD__;
+          
+          return '';
+        });
+      } catch (e) {}
+      
+      // 좌표가 없으면 인천 좌표 사용
+      if (!searchCoord) {
+        searchCoord = '126.7052062;37.4559418'; // 인천 좌표
+      }
+      
+      console.log('검색 좌표: ' + searchCoord);
       
       for (let start = 1; start <= 500 && allPlaceData.length < endRank; start += 50) {
-        const apiUrl = 'https://map.naver.com/p/api/search/allSearch?query=' + encodeURIComponent(keyword) + 
-                      '&type=all&searchCoord=' + searchCoord + '&start=' + start + '&display=50&lang=ko';
+        // 여러 API URL 형식 시도
+        const apiUrl = 'https://map.naver.com/p/api/search/allSearch' +
+                      '?query=' + encodeURIComponent(keyword) +
+                      '&type=all' +
+                      '&searchCoord=' + encodeURIComponent(searchCoord) +
+                      '&boundary=' +
+                      '&start=' + start +
+                      '&display=50' +
+                      '&adult=false' +
+                      '&spq=false' +
+                      '&queryRank=' +
+                      '&lang=ko';
         
         console.log('API 호출 (start=' + start + ')...');
         
@@ -312,7 +342,7 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
                 credentials: 'include',
                 headers: {
                   'Accept': 'application/json, text/plain, */*',
-                  'Referer': 'https://map.naver.com/'
+                  'Referer': window.location.href
                 }
               });
               const text = await res.text();
@@ -328,8 +358,7 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
           }
           
           if (response.status !== 200) {
-            console.log('응답 상태: ' + response.status);
-            console.log('에러: ' + response.text.substring(0, 300));
+            console.log('응답 상태: ' + response.status + ', ' + response.text.substring(0, 200));
             break;
           }
           
@@ -339,10 +368,15 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
           const placeList = json?.result?.place?.list || [];
           const totalCount = json?.result?.place?.totalCount || 0;
           
-          console.log('페이지 결과: ' + placeList.length + '개 (전체: ' + totalCount + '개)');
+          console.log('결과: ' + placeList.length + '개 (전체: ' + totalCount + '개)');
+          
+          if (placeList.length === 0 && start === 1) {
+            // 디버깅 - 응답 구조 확인
+            console.log('응답 키: ' + JSON.stringify(Object.keys(json?.result || {})));
+            console.log('응답 샘플: ' + response.text.substring(0, 500));
+          }
           
           if (placeList.length === 0) {
-            console.log('더 이상 결과 없음');
             break;
           }
           
@@ -362,7 +396,6 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
           
           console.log('누적: ' + allPlaceData.length + '개');
           
-          // 전체 개수에 도달하면 종료
           if (allPlaceData.length >= totalCount || placeList.length < 50) {
             console.log('모든 결과 수집 완료');
             break;
@@ -374,6 +407,46 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
           console.log('API 호출 실패: ' + e.message);
           break;
         }
+      }
+      
+      // API 실패 시 네트워크 캡처 방식으로 폴백
+      if (allPlaceData.length === 0) {
+        console.log('API 직접 호출 실패, 네트워크 캡처로 재시도...');
+        
+        // 페이지 리로드하면서 응답 캡처
+        await page.setRequestInterception(true);
+        
+        page.on('request', req => req.continue());
+        
+        page.on('response', async res => {
+          const url = res.url();
+          if (url.includes('allSearch') && url.includes('query')) {
+            try {
+              const json = await res.json();
+              const list = json?.result?.place?.list || [];
+              console.log('캡처: ' + list.length + '개');
+              
+              for (const item of list) {
+                const placeId = String(item.id || '');
+                if (placeId && !capturedIds.has(placeId)) {
+                  capturedIds.add(placeId);
+                  allPlaceData.push({
+                    placeId,
+                    name: item.name || '',
+                    tel: item.tel || item.phone || '',
+                    category: Array.isArray(item.category) ? item.category.join(' > ') : '',
+                    address: item.roadAddress || item.address || ''
+                  });
+                }
+              }
+            } catch (e) {}
+          }
+        });
+        
+        await page.reload({ waitUntil: 'networkidle2' });
+        await new Promise(r => setTimeout(r, 5000));
+        
+        console.log('캡처 완료: ' + allPlaceData.length + '개');
       }
       
       console.log('API 호출 완료: ' + allPlaceData.length + '개');
