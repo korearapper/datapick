@@ -41,10 +41,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 const PROXY_HOST = 'kr.decodo.com';
 const PROXY_USER = 'spuqtp2czv';
 const PROXY_PASS = '1voaShrNj_2f4V3hgB';
-let proxyIdx = 0;
 function getProxyAgent() {
-  const port = 10001 + (proxyIdx % 1000);
-  proxyIdx++;
+  const port = 10001 + Math.floor(Math.random() * 10000); // 10001~20000 랜덤
   return new HttpsProxyAgent(`http://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${port}`);
 }
 
@@ -119,73 +117,86 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
     console.log(`Place ID: ${placeIds.length}개`);
     if (!placeIds.length) return res.status(400).json({ error: '검색 결과 없음' });
 
-    // 2단계: 각 Place 상세 페이지 (PC 버전)
+    // 2단계: 각 Place 상세 페이지 (PC 버전) + 실패 시 재시도
     const targetIds = placeIds.slice(sr - 1, Math.min(er, placeIds.length));
     const results = [];
     const BATCH = 5;
     const SKIP = ['네이버', 'naver', 'NAVER', '검색', '지도', '플레이스', 'place', 'map'];
 
-    for (let i = 0; i < targetIds.length; i += BATCH) {
-      const batch = targetIds.slice(i, i + BATCH);
-      const br = await Promise.all(batch.map(async (pid, idx) => {
-        const rank = sr + i + idx;
-        try {
-          const da = getProxyAgent();
-          const d = (await axios.get(`https://pcmap.place.naver.com/place/${pid}/home`, {
-            httpsAgent: da, timeout: 15000,
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-              'Accept': 'text/html', 'Accept-Language': 'ko-KR,ko;q=0.9',
-            }
-          })).data;
-
-          let name = '', tel = '', address = '', category = '';
-
-          // 업체명: "name":"xxx" 중 의미있는 첫 번째
-          for (const nm of d.matchAll(/"name"\s*:\s*"([^"]{2,60})"/g)) {
-            const n = nm[1];
-            if (SKIP.some(s => n.toLowerCase().includes(s.toLowerCase())) || n.startsWith('http') || n.startsWith('/')) continue;
-            name = n; break;
+    async function fetchPlace(pid, rank, retry = 0) {
+      try {
+        const da = getProxyAgent();
+        const d = (await axios.get(`https://pcmap.place.naver.com/place/${pid}/home`, {
+          httpsAgent: da, timeout: 15000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html', 'Accept-Language': 'ko-KR,ko;q=0.9',
           }
+        })).data;
 
-          // 전화번호
-          const tm = d.match(/"(?:phone|tel|virtualPhone|virtualTel)"\s*:\s*"([0-9\-]+)"/) || d.match(/href="tel:([^"]+)"/);
-          if (tm) tel = tm[1];
+        let name = '', tel = '', address = '', category = '';
 
-          // 주소
-          const am = d.match(/"roadAddress"\s*:\s*"([^"]+)"/) || d.match(/"address"\s*:\s*"([^"]{10,})"/);
-          if (am) address = am[1];
-
-          // 카테고리 (배열 또는 문자열)
-          const ca = d.match(/"category"\s*:\s*\[([^\]]+)\]/);
-          if (ca) { try { category = JSON.parse('[' + ca[1] + ']').join(' > '); } catch(e) {} }
-          if (!category) { const cm = d.match(/"category"\s*:\s*"([^"]+)"/); if (cm) category = cm[1]; }
-
-          // 폴백: og:title
-          if (!name) {
-            const og = d.match(/<meta\s+property="og:title"\s+content="([^"]+)"/);
-            if (og) { const t = og[1].replace(/\s*[:·\-|].*/g, '').trim(); if (!SKIP.some(s => t.includes(s))) name = t; }
-          }
-
-          if (rank <= 3) console.log(`  ${rank}위: ${name || '(없음)'} | ${tel || '-'} | ${address?.substring(0,20) || '-'}`);
-          return { rank, name, tel, address, category, placeId: pid };
-        } catch (e) {
-          return { rank, name: '', tel: '', address: '', category: '', placeId: pid };
+        // 업체명
+        for (const nm of d.matchAll(/"name"\s*:\s*"([^"]{2,60})"/g)) {
+          const n = nm[1];
+          if (SKIP.some(s => n.toLowerCase().includes(s.toLowerCase())) || n.startsWith('http') || n.startsWith('/')) continue;
+          name = n; break;
         }
-      }));
-      results.push(...br);
-      console.log(`진행: ${Math.min(i + BATCH, targetIds.length)}/${targetIds.length}`);
-      if (i + BATCH < targetIds.length) await new Promise(r => setTimeout(r, 200));
+
+        // 전화번호
+        const tm = d.match(/"(?:phone|tel|virtualPhone|virtualTel)"\s*:\s*"([0-9\-]+)"/) || d.match(/href="tel:([^"]+)"/);
+        if (tm) tel = tm[1];
+
+        // 주소
+        const am = d.match(/"roadAddress"\s*:\s*"([^"]+)"/) || d.match(/"address"\s*:\s*"([^"]{10,})"/);
+        if (am) address = am[1];
+
+        // 카테고리
+        const ca = d.match(/"category"\s*:\s*\[([^\]]+)\]/);
+        if (ca) { try { category = JSON.parse('[' + ca[1] + ']').join(' > '); } catch(e) {} }
+        if (!category) { const cm = d.match(/"category"\s*:\s*"([^"]+)"/); if (cm) category = cm[1]; }
+
+        // 폴백: og:title
+        if (!name) {
+          const og = d.match(/<meta\s+property="og:title"\s+content="([^"]+)"/);
+          if (og) { const t = og[1].replace(/\s*[:·\-|].*/g, '').trim(); if (!SKIP.some(s => t.includes(s))) name = t; }
+        }
+
+        // 이름 못 찾았으면 재시도 (다른 프록시 IP로)
+        if (!name && retry < 2) {
+          console.log(`  ${rank}위 이름없음 → 재시도 ${retry + 1}/2 (다른 IP)`);
+          await new Promise(r => setTimeout(r, 300));
+          return fetchPlace(pid, rank, retry + 1);
+        }
+
+        return { rank, name, tel, address, category, placeId: pid };
+      } catch (e) {
+        // 네트워크 에러 시 재시도
+        if (retry < 2) {
+          console.log(`  ${rank}위 에러(${e.message}) → 재시도 ${retry + 1}/2`);
+          await new Promise(r => setTimeout(r, 500));
+          return fetchPlace(pid, rank, retry + 1);
+        }
+        return { rank, name: '', tel: '', address: '', category: '', placeId: pid };
+      }
     }
 
-    // 포인트 차감
-    const used = results.length;
+    for (let i = 0; i < targetIds.length; i += BATCH) {
+      const batch = targetIds.slice(i, i + BATCH);
+      const br = await Promise.all(batch.map((pid, idx) => fetchPlace(pid, sr + i + idx)));
+      results.push(...br);
+      console.log(`진행: ${Math.min(i + BATCH, targetIds.length)}/${targetIds.length}`);
+      if (i + BATCH < targetIds.length) await new Promise(r => setTimeout(r, 300));
+    }
+
+    // 포인트: 실제 추출 성공건만 차감
+    const successResults = results.filter(r => r.name);
+    const used = successResults.length;
     const newPts = user.points - used;
     db.prepare('UPDATE users SET points = ? WHERE id = ?').run(newPts, req.user.userId);
     db.prepare('INSERT INTO point_history (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(
-      req.user.userId, -used, 'use', `플레이스: ${keyword} (${used}건)`);
-    const ok = results.filter(r => r.name).length;
-    console.log(`완료: ${results.length}건 (이름있음: ${ok}건)\n`);
+      req.user.userId, -used, 'use', `플레이스: ${keyword} (성공 ${used}/${results.length}건)`);
+    console.log(`완료: ${results.length}건 중 성공 ${used}건, ${used}P 차감\n`);
     res.json({ success: true, data: results, usedPoints: used, remainingPoints: newPts });
   } catch (error) {
     console.error('크롤링 에러:', error.message);
