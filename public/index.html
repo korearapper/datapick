@@ -962,10 +962,45 @@
           <div class="extract-icon" style="background:linear-gradient(135deg,#3b82f6,#1d4ed8);">🛒</div>
           <div>
             <div class="extract-title">스마트스토어 추출</div>
-            <div class="extract-desc">곧 출시 예정입니다</div>
+            <div class="extract-desc">네이버 쇼핑 검색 결과의 스토어 정보를 추출합니다</div>
           </div>
         </div>
-        <div style="padding:80px;text-align:center;color:var(--text-tertiary);">🚧 서비스 준비 중</div>
+        <div class="extract-form">
+          <div class="extract-input">
+            <label>검색 키워드</label>
+            <input type="text" id="storeKeyword" placeholder="예: 강아지사료, 블루투스이어폰">
+          </div>
+          <div class="extract-input">
+            <label>추출 범위</label>
+            <input type="text" value="1위 ~ 40위" disabled style="opacity:0.6;cursor:not-allowed;">
+            <input type="hidden" id="storeStartRank" value="1">
+            <input type="hidden" id="storeEndRank" value="40">
+          </div>
+          <button class="btn-extract" onclick="extractStore()">1위~40위 추출하기</button>
+        </div>
+        <div class="extract-estimate">예상 사용: <strong>40</strong> 포인트 (성공건만 차감)</div>
+      </div>
+
+      <div id="storeResult" class="result-card hidden">
+        <div class="result-header">
+          <div class="result-stats">
+            <div>
+              <div class="result-stat-value" id="storeCount">0</div>
+              <div class="result-stat-label">추출 완료</div>
+            </div>
+            <div>
+              <div class="result-stat-value" id="storeUsedPoints">0</div>
+              <div class="result-stat-label">사용 포인트</div>
+            </div>
+          </div>
+          <button class="btn-download" onclick="downloadExcel('store')">📥 엑셀 다운로드</button>
+        </div>
+        <table class="result-table" id="storeTable">
+          <thead>
+            <tr><th>순위</th><th>상품명</th><th>스토어명</th><th>가격</th><th>리뷰수</th><th>카테고리</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
       </div>
     </div>
 
@@ -1219,13 +1254,70 @@ async function extractPlace() {
   }
 }
 
+// Extract Store
+async function extractStore() {
+  const keyword = document.getElementById('storeKeyword').value;
+  if (!keyword) return alert('키워드를 입력해주세요.');
+  
+  document.getElementById('loadingOverlay').style.display = 'flex';
+  document.getElementById('storeResult').classList.add('hidden');
+  
+  try {
+    const res = await apiRequest('/api/extract/store', {
+      method: 'POST',
+      body: JSON.stringify({ keyword, startRank: 1, endRank: 40 })
+    });
+    const data = await res.json();
+    document.getElementById('loadingOverlay').style.display = 'none';
+    
+    if (res.ok) {
+      extractedData.store = data.data;
+      document.getElementById('userPoints').textContent = data.remainingPoints.toLocaleString();
+      currentUser.points = data.remainingPoints;
+      document.getElementById('storeCount').textContent = data.data.length.toLocaleString();
+      document.getElementById('storeUsedPoints').textContent = data.usedPoints.toLocaleString();
+      
+      document.querySelector('#storeTable tbody').innerHTML = data.data.map(item => `
+        <tr>
+          <td>${item.rank}</td>
+          <td>${item.productName || '-'}</td>
+          <td>${item.storeName || '-'}</td>
+          <td>${item.price ? Number(item.price).toLocaleString() + '원' : '-'}</td>
+          <td>${item.reviewCount || '-'}</td>
+          <td>${item.category || '-'}</td>
+        </tr>
+      `).join('');
+      
+      document.getElementById('storeResult').classList.remove('hidden');
+    } else {
+      alert(data.error);
+    }
+  } catch (e) {
+    document.getElementById('loadingOverlay').style.display = 'none';
+    alert('추출 중 오류가 발생했습니다.');
+  }
+}
+
 function downloadExcel(type) {
   const data = extractedData[type];
-  if (!data.length) return alert('다운로드할 데이터가 없습니다.');
-  let csv = '\uFEFF순위,업체명,전화번호,주소,카테고리\n';
-  data.forEach(item => {
-    csv += `${item.rank},"${item.name}","${item.tel}","${item.address}","${item.category}"\n`;
-  });
+  if (!data || !data.length) return alert('다운로드할 데이터가 없습니다.');
+  let csv = '';
+  if (type === 'place') {
+    csv = '\uFEFF순위,업체명,전화번호,주소,카테고리\n';
+    data.forEach(item => {
+      csv += `${item.rank},"${item.name || ''}","${item.tel || ''}","${item.address || ''}","${item.category || ''}"\n`;
+    });
+  } else if (type === 'store') {
+    csv = '\uFEFF순위,상품명,스토어명,가격,리뷰수,카테고리\n';
+    data.forEach(item => {
+      csv += `${item.rank},"${item.productName || ''}","${item.storeName || ''}","${item.price || ''}","${item.reviewCount || ''}","${item.category || ''}"\n`;
+    });
+  } else if (type === 'coupang') {
+    csv = '\uFEFF순위,상품명,판매자,가격,리뷰수,평점\n';
+    data.forEach(item => {
+      csv += `${item.rank},"${item.productName || ''}","${item.sellerName || ''}","${item.price || ''}","${item.reviewCount || ''}","${item.rating || ''}"\n`;
+    });
+  }
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
