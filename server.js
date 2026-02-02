@@ -120,17 +120,32 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
     // 2단계: 각 Place 상세 페이지 (PC 버전) + 실패 시 재시도
     const targetIds = placeIds.slice(sr - 1, Math.min(er, placeIds.length));
     const results = [];
-    const BATCH = 5;
+    const BATCH = 3; // 5→3으로 줄여서 속도 조절
     const SKIP = ['네이버', 'naver', 'NAVER', '검색', '지도', '플레이스', 'place', 'map'];
+    
+    // User-Agent 랜덤 돌리기
+    const UAs = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    ];
 
     async function fetchPlace(pid, rank, retry = 0) {
       try {
         const da = getProxyAgent();
+        const ua = UAs[Math.floor(Math.random() * UAs.length)];
         const d = (await axios.get(`https://pcmap.place.naver.com/place/${pid}/home`, {
           httpsAgent: da, timeout: 15000,
           headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html', 'Accept-Language': 'ko-KR,ko;q=0.9',
+            'User-Agent': ua,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Referer': 'https://map.naver.com/',
           }
         })).data;
 
@@ -162,19 +177,20 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
           if (og) { const t = og[1].replace(/\s*[:·\-|].*/g, '').trim(); if (!SKIP.some(s => t.includes(s))) name = t; }
         }
 
-        // 이름 못 찾았으면 재시도 (다른 프록시 IP로)
-        if (!name && retry < 2) {
-          console.log(`  ${rank}위 이름없음 → 재시도 ${retry + 1}/2 (다른 IP)`);
-          await new Promise(r => setTimeout(r, 300));
+        // 이름 못 찾았으면 재시도
+        if (!name && retry < 3) {
+          await new Promise(r => setTimeout(r, 1000 + retry * 1000));
           return fetchPlace(pid, rank, retry + 1);
         }
 
         return { rank, name, tel, address, category, placeId: pid };
       } catch (e) {
-        // 네트워크 에러 시 재시도
-        if (retry < 2) {
-          console.log(`  ${rank}위 에러(${e.message}) → 재시도 ${retry + 1}/2`);
-          await new Promise(r => setTimeout(r, 500));
+        const is429 = e.response?.status === 429;
+        if (retry < 3) {
+          // 429면 길게 대기, 그 외는 짧게
+          const wait = is429 ? 3000 + retry * 2000 : 1000 + retry * 500;
+          console.log(`  ${rank}위 ${is429 ? '429 차단' : '에러'} → ${(wait/1000).toFixed(1)}초 후 재시도 ${retry + 1}/3`);
+          await new Promise(r => setTimeout(r, wait));
           return fetchPlace(pid, rank, retry + 1);
         }
         return { rank, name: '', tel: '', address: '', category: '', placeId: pid };
@@ -185,8 +201,15 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       const batch = targetIds.slice(i, i + BATCH);
       const br = await Promise.all(batch.map((pid, idx) => fetchPlace(pid, sr + i + idx)));
       results.push(...br);
-      console.log(`진행: ${Math.min(i + BATCH, targetIds.length)}/${targetIds.length}`);
-      if (i + BATCH < targetIds.length) await new Promise(r => setTimeout(r, 300));
+      
+      const done = Math.min(i + BATCH, targetIds.length);
+      const okSoFar = results.filter(r => r.name).length;
+      console.log(`진행: ${done}/${targetIds.length} (성공: ${okSoFar})`);
+      
+      // 배치 간 랜덤 딜레이 (0.5~1.5초)
+      if (i + BATCH < targetIds.length) {
+        await new Promise(r => setTimeout(r, 500 + Math.floor(Math.random() * 1000)));
+      }
     }
 
     // 포인트: 실제 추출 성공건만 차감
