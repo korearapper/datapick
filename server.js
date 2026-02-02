@@ -291,16 +291,34 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       console.log(`응답 키: ${Object.keys(data || {}).join(', ')}`);
       if (data?.result) {
         console.log(`result 키: ${Object.keys(data.result || {}).join(', ')}`);
+        if (data?.result?.place) {
+          console.log(`place 키: ${Object.keys(data.result.place || {}).join(', ')}`);
+          console.log(`place 타입: ${typeof data.result.place}`);
+          if (Array.isArray(data.result.place)) {
+            console.log(`place 배열 길이: ${data.result.place.length}`);
+          }
+        }
       }
       
+      // 다양한 경로 시도
       if (data?.result?.place?.list) {
         places = data.result.place.list;
+        console.log('경로: result.place.list');
+      } else if (Array.isArray(data?.result?.place)) {
+        places = data.result.place;
+        console.log('경로: result.place (배열)');
+      } else if (data?.result?.place?.items) {
+        places = data.result.place.items;
+        console.log('경로: result.place.items');
+      } else if (data?.result?.place?.data) {
+        places = data.result.place.data;
+        console.log('경로: result.place.data');
       } else if (data?.result?.list) {
         places = data.result.list;
+        console.log('경로: result.list');
       } else if (data?.place?.list) {
         places = data.place.list;
-      } else if (Array.isArray(data?.result)) {
-        places = data.result;
+        console.log('경로: place.list');
       }
       
       console.log(`페이지 ${page} 응답: ${places.length}개 업체`);
