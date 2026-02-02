@@ -256,131 +256,168 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
   try {
     console.log(`크롤링 시작: ${keyword}, ${startRank}~${endRank}위`);
     
-    // 1단계: 검색 결과에서 place ID 목록 추출
+    // 네이버 지도 내부 API 직접 호출
     const allPlaceIds = [];
+    const allPlaceData = []; // ID와 함께 기본 정보도 저장
     
-    // 방법: 네이버 지도 검색 API (페이지네이션)
+    // 네이버 지도 검색 API (실제 사용되는 엔드포인트)
     for (let page = 1; page <= 10 && allPlaceIds.length < endRank + 20; page++) {
       const proxy = getNextProxy();
       const proxyUrl = `http://${proxy.auth.username}:${proxy.auth.password}@${proxy.host}:${proxy.port}`;
       const agent = new HttpsProxyAgent(proxyUrl);
       
-      const start = (page - 1) * 50 + 1;
-      const searchUrl = `https://map.naver.com/v5/api/search?caller=pcweb&query=${encodeURIComponent(keyword)}&type=all&page=${page}&displayCount=50&lang=ko`;
+      // 네이버 지도 실제 검색 API
+      const searchUrl = `https://pcmap-api.place.naver.com/place/graphql`;
       
-      console.log(`API 페이지 ${page} 요청 (start=${start})...`);
+      const graphqlQuery = {
+        operationName: "getPlacesList",
+        variables: {
+          input: {
+            query: keyword,
+            start: (page - 1) * 50 + 1,
+            display: 50,
+            adult: false,
+            spq: false,
+            queryRank: ""
+          },
+          isNmap: true
+        },
+        query: `query getPlacesList($input: PlacesInput, $isNmap: Boolean!) {
+          businesses: places(input: $input) {
+            total
+            items {
+              id
+              name
+              tel
+              roadAddress
+              address
+              category
+            }
+          }
+        }`
+      };
+      
+      console.log(`GraphQL 페이지 ${page} 요청...`);
       
       try {
-        const response = await axios.get(searchUrl, {
+        const response = await axios.post(searchUrl, graphqlQuery, {
           httpsAgent: agent,
           timeout: 15000,
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json, text/plain, */*',
-            'Accept-Language': 'ko-KR,ko;q=0.9',
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
             'Referer': 'https://map.naver.com/',
+            'Origin': 'https://map.naver.com',
           }
         });
         
         const data = response.data;
-        console.log(`응답 타입: ${typeof data}`);
+        const items = data?.data?.businesses?.items || [];
         
-        let places = [];
+        console.log(`페이지 ${page}: ${items.length}개 발견`);
         
-        // 다양한 응답 구조 시도
-        if (data?.result?.place?.list) {
-          places = data.result.place.list;
-        } else if (data?.result?.site?.list) {
-          places = data.result.site.list;
-        } else if (data?.place?.list) {
-          places = data.place.list;
-        } else if (data?.list) {
-          places = data.list;
-        } else if (Array.isArray(data)) {
-          places = data;
-        }
+        if (items.length === 0) break;
         
-        console.log(`페이지 ${page}: ${places.length}개 발견`);
-        
-        if (places.length === 0) {
-          // JSON에서 직접 ID 추출 시도
-          const jsonStr = JSON.stringify(data);
-          const idPattern = /"id"\s*:\s*"?(\d{8,})"?/g;
-          let match;
-          while ((match = idPattern.exec(jsonStr)) !== null) {
-            if (!allPlaceIds.includes(match[1])) {
-              allPlaceIds.push(match[1]);
-            }
-          }
-          console.log(`JSON에서 직접 추출: ${allPlaceIds.length}개`);
-          if (allPlaceIds.length === 0) break;
-        } else {
-          for (const place of places) {
-            const id = place.id || place.sid || place.placeId;
-            if (id && !allPlaceIds.includes(String(id))) {
-              allPlaceIds.push(String(id));
-            }
+        for (const item of items) {
+          if (item.id && !allPlaceIds.includes(String(item.id))) {
+            allPlaceIds.push(String(item.id));
+            allPlaceData.push({
+              id: String(item.id),
+              name: item.name || '',
+              tel: item.tel || '',
+              address: item.roadAddress || item.address || '',
+              category: item.category || ''
+            });
           }
         }
         
         console.log(`총 ${allPlaceIds.length}개`);
         
-        if (places.length < 50 && allPlaceIds.length > 0) break;
+        if (items.length < 50) break;
         
       } catch (e) {
-        console.log(`API 페이지 ${page} 실패: ${e.message}`);
+        console.log(`GraphQL 페이지 ${page} 실패: ${e.message}`);
+        
+        // GraphQL 실패시 HTML 파싱으로 폴백
+        if (page === 1) {
+          console.log('HTML 파싱으로 전환...');
+          
+          const htmlUrl = `https://m.map.naver.com/search2/search.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5`;
+          
+          try {
+            const htmlResponse = await axios.get(htmlUrl, {
+              httpsAgent: agent,
+              timeout: 15000,
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+              }
+            });
+            
+            const html = htmlResponse.data;
+            const patterns = [/place\/(\d{8,})/gi, /"id"\s*:\s*"?(\d{8,})"?/gi, /sid[=:][\s"']*(\d{8,})/gi];
+            
+            for (const pattern of patterns) {
+              let match;
+              pattern.lastIndex = 0;
+              while ((match = pattern.exec(html)) !== null) {
+                if (!allPlaceIds.includes(match[1])) {
+                  allPlaceIds.push(match[1]);
+                }
+              }
+            }
+            
+            console.log(`HTML에서 ${allPlaceIds.length}개 추출`);
+          } catch (htmlErr) {
+            console.log(`HTML도 실패: ${htmlErr.message}`);
+          }
+        }
         break;
       }
       
-      await new Promise(r => setTimeout(r, 200));
-    }
-    
-    // API 실패시 HTML 파싱
-    if (allPlaceIds.length < endRank) {
-      console.log(`API 결과 부족 (${allPlaceIds.length}개), HTML 파싱...`);
-      
-      const proxy = getNextProxy();
-      const proxyUrl = `http://${proxy.auth.username}:${proxy.auth.password}@${proxy.host}:${proxy.port}`;
-      const agent = new HttpsProxyAgent(proxyUrl);
-      
-      const htmlUrl = `https://m.map.naver.com/search2/search.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5`;
-      
-      try {
-        const htmlResponse = await axios.get(htmlUrl, {
-          httpsAgent: agent,
-          timeout: 15000,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
-          }
-        });
-        
-        const html = htmlResponse.data;
-        const patterns = [/place\/(\d{8,})/gi, /"id"\s*:\s*"?(\d{8,})"?/gi, /sid[=:][\s"']*(\d{8,})/gi];
-        
-        for (const pattern of patterns) {
-          let match;
-          pattern.lastIndex = 0;
-          while ((match = pattern.exec(html)) !== null) {
-            if (!allPlaceIds.includes(match[1])) allPlaceIds.push(match[1]);
-          }
-        }
-        
-        console.log(`HTML 파싱 후 총: ${allPlaceIds.length}개`);
-      } catch (e) {
-        console.log(`HTML 파싱 실패: ${e.message}`);
-      }
+      await new Promise(r => setTimeout(r, 300));
     }
     
     console.log(`총 Place ID: ${allPlaceIds.length}개`);
+    
+    if (allPlaceIds.length === 0) {
+      return res.status(400).json({ error: '검색 결과를 가져올 수 없습니다.' });
+    }
     
     if (allPlaceIds.length < startRank) {
       return res.status(400).json({ error: `검색 결과가 ${allPlaceIds.length}개뿐입니다. 시작 순위(${startRank})보다 적습니다.` });
     }
     
-    // 2단계: 상세 정보 가져오기 (병렬 처리 - 5개씩)
+    // GraphQL에서 이미 데이터를 가져왔으면 바로 사용
+    const useGraphQLData = allPlaceData.length > 0;
+    
+    // 2단계: 상세 정보 가져오기
     const targetIds = allPlaceIds.slice(startRank - 1, endRank);
     const results = [];
-    const BATCH_SIZE = 5; // 동시 요청 수
+    
+    if (useGraphQLData) {
+      // GraphQL에서 이미 데이터를 가져왔으면 바로 사용
+      console.log('GraphQL 데이터 사용');
+      const targetData = allPlaceData.slice(startRank - 1, endRank);
+      
+      for (let i = 0; i < targetData.length; i++) {
+        const data = targetData[i];
+        results.push({
+          rank: startRank + i,
+          name: data.name,
+          tel: data.tel,
+          address: data.address,
+          category: data.category,
+          placeId: data.id
+        });
+      }
+      
+      console.log(`GraphQL에서 ${results.length}건 완료`);
+      
+    } else {
+      // HTML에서 ID만 가져왔으면 상세 페이지에서 정보 추출
+      console.log('상세 페이지에서 정보 추출 시작...');
+      const BATCH_SIZE = 5;
     
     for (let i = 0; i < targetIds.length; i += BATCH_SIZE) {
       const batch = targetIds.slice(i, i + BATCH_SIZE);
@@ -483,6 +520,7 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
         await new Promise(r => setTimeout(r, 100));
       }
     }
+    } // end of else (HTML 파싱 분기)
     
     // 순위순 정렬
     results.sort((a, b) => a.rank - b.rank);
