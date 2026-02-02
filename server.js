@@ -256,65 +256,98 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
   try {
     console.log(`크롤링 시작: ${keyword}, ${startRank}~${endRank}위`);
     
-    // 1단계: 검색 결과에서 place ID 목록 추출 (페이징 포함)
+    // 1단계: 검색 결과에서 place ID 목록 추출 (여러 방식 조합)
     const allPlaceIds = [];
-    const maxPages = Math.ceil(endRank / 50); // 페이지당 약 50개
     
-    for (let page = 1; page <= maxPages && allPlaceIds.length < endRank; page++) {
+    // 방법 1: 네이버 지도 검색 API (JSON)
+    for (let page = 1; page <= 10 && allPlaceIds.length < endRank + 50; page++) {
       const proxy = getNextProxy();
       const proxyUrl = `http://${proxy.auth.username}:${proxy.auth.password}@${proxy.host}:${proxy.port}`;
       const agent = new HttpsProxyAgent(proxyUrl);
       
-      // 페이징 URL
-      const searchUrl = page === 1 
-        ? `https://m.map.naver.com/search2/search.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5`
-        : `https://m.map.naver.com/search2/searchMore.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5&page=${page}`;
+      const start = (page - 1) * 50 + 1;
+      const searchUrl = `https://map.naver.com/p/api/search/allSearch?query=${encodeURIComponent(keyword)}&type=all&searchCoord=&boundary=&start=${start}&display=50`;
       
-      console.log(`검색 페이지 ${page} 요청...`);
+      console.log(`API 페이지 ${page} 요청 (start=${start})...`);
       
       try {
         const searchResponse = await axios.get(searchUrl, {
           httpsAgent: agent,
-          timeout: 20000,
+          timeout: 15000,
           headers: {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
             'Accept-Language': 'ko-KR,ko;q=0.9',
+            'Referer': 'https://map.naver.com/',
           }
         });
         
-        const html = searchResponse.data;
+        const data = searchResponse.data;
+        const places = data?.result?.place?.list || [];
         
-        // Place ID 추출
-        const idPatterns = [
-          /sid[=:][\s"']*(\d{8,})/gi,
-          /place\/(\d{8,})/gi,
-          /"id"\s*:\s*"?(\d{8,})"?/gi,
-          /data-id="(\d{8,})"/gi,
-          /"placeId"\s*:\s*"?(\d{8,})"?/gi
-        ];
+        if (places.length === 0) {
+          console.log(`페이지 ${page}: 결과 없음, 종료`);
+          break;
+        }
         
-        const pageIds = [];
-        for (const pattern of idPatterns) {
-          let match;
-          while ((match = pattern.exec(html)) !== null) {
-            if (!pageIds.includes(match[1]) && !allPlaceIds.includes(match[1])) {
-              pageIds.push(match[1]);
-            }
+        for (const place of places) {
+          const id = place.id || place.sid;
+          if (id && !allPlaceIds.includes(String(id))) {
+            allPlaceIds.push(String(id));
           }
         }
         
-        allPlaceIds.push(...pageIds);
-        console.log(`페이지 ${page}: ${pageIds.length}개 발견 (총 ${allPlaceIds.length}개)`);
+        console.log(`페이지 ${page}: ${places.length}개 발견 (총 ${allPlaceIds.length}개)`);
         
-        if (pageIds.length === 0) break; // 더 이상 결과 없음
+        if (places.length < 50) break; // 마지막 페이지
         
       } catch (e) {
-        console.log(`페이지 ${page} 실패: ${e.message}`);
+        console.log(`API 페이지 ${page} 실패: ${e.message}`);
         break;
       }
       
       await new Promise(r => setTimeout(r, 200));
+    }
+    
+    // 방법 2: API 결과 부족하면 HTML 파싱 추가
+    if (allPlaceIds.length < endRank) {
+      console.log(`API 결과 부족 (${allPlaceIds.length}개), HTML 파싱 추가...`);
+      
+      const proxy = getNextProxy();
+      const proxyUrl = `http://${proxy.auth.username}:${proxy.auth.password}@${proxy.host}:${proxy.port}`;
+      const agent = new HttpsProxyAgent(proxyUrl);
+      
+      const htmlUrl = `https://m.map.naver.com/search2/search.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5`;
+      
+      try {
+        const htmlResponse = await axios.get(htmlUrl, {
+          httpsAgent: agent,
+          timeout: 15000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+            'Accept': 'text/html',
+          }
+        });
+        
+        const html = htmlResponse.data;
+        const idPatterns = [
+          /sid[=:][\s"']*(\d{8,})/gi,
+          /place\/(\d{8,})/gi,
+          /"id"\s*:\s*"?(\d{8,})"?/gi,
+        ];
+        
+        for (const pattern of idPatterns) {
+          let match;
+          while ((match = pattern.exec(html)) !== null) {
+            if (!allPlaceIds.includes(match[1])) {
+              allPlaceIds.push(match[1]);
+            }
+          }
+        }
+        console.log(`HTML 추가 후 총: ${allPlaceIds.length}개`);
+      } catch (e) {
+        console.log(`HTML 파싱 실패: ${e.message}`);
+      }
     }
     
     console.log(`총 Place ID: ${allPlaceIds.length}개`);
