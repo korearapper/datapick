@@ -50,6 +50,7 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ============ 프록시 설정 ============
+// Decodo 한국 프록시
 const PROXY_HOST = 'gate.decodo.com';
 const PROXY_USER = 'sph9s9jqsh';
 const PROXY_PASS = 'KdRv7FXSJG6k7~a_country-kr';
@@ -58,10 +59,13 @@ let proxyIndex = 0;
 function getProxyAgent() {
   const port = 10001 + (proxyIndex % 100);
   proxyIndex++;
-  // 비밀번호 URL 인코딩 (특수문자 ~ 처리)
-  const encodedPass = encodeURIComponent(PROXY_PASS);
-  const proxyUrl = `http://${PROXY_USER}:${encodedPass}@${PROXY_HOST}:${port}`;
-  return new HttpsProxyAgent(proxyUrl);
+  // 특수문자 처리를 위해 Buffer 사용
+  const auth = Buffer.from(`${PROXY_USER}:${PROXY_PASS}`).toString('base64');
+  const agent = new HttpsProxyAgent(`http://${PROXY_HOST}:${port}`);
+  agent.options.headers = {
+    'Proxy-Authorization': `Basic ${auth}`
+  };
+  return agent;
 }
 
 // ============ JWT 인증 ============
