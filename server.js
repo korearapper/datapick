@@ -9,7 +9,7 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'datapick-secret-key-2024';
+const JWT_SECRET = process.env.JWT_SECRET || 'datapick-secret-2024';
 
 app.set('trust proxy', 1);
 
@@ -24,24 +24,21 @@ db.exec(`
     is_admin INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
-  
   CREATE TABLE IF NOT EXISTS point_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
     amount INTEGER,
     type TEXT,
     description TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id)
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
 
-// 관리자 계정 생성
 const adminExists = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
 if (!adminExists) {
   const hashedPw = bcrypt.hashSync('admin1234', 10);
   db.prepare('INSERT INTO users (username, password, points, is_admin) VALUES (?, ?, ?, ?)').run('admin', hashedPw, 1000000, 1);
-  console.log('관리자 계정 생성됨 - ID: admin, PW: admin1234, 포인트: 1,000,000');
+  console.log('관리자 계정 생성됨 - ID: admin, PW: admin1234');
 }
 
 app.use(express.json());
@@ -49,49 +46,37 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ============ 프록시 설정 ============
-// Decodo 한국 프록시
-const PROXY_HOST = 'gate.decodo.com';
-const PROXY_USER = 'sph9s9jqsh';
-const PROXY_PASS = 'KdRv7FXSJG6k7~a_country-kr';
+// ============ 프록시 (Decodo 한국) ============
+const PROXY_HOST = 'kr.decodo.com';
+const PROXY_USER = 'spuqtp2czv';
+const PROXY_PASS = '1voaShrNj_2f4V3hgB';
 
-let proxyIndex = 0;
+let proxyIdx = 0;
 function getProxyAgent() {
-  const port = 10001 + (proxyIndex % 100);
-  proxyIndex++;
-  // 특수문자 처리를 위해 Buffer 사용
-  const auth = Buffer.from(`${PROXY_USER}:${PROXY_PASS}`).toString('base64');
-  const agent = new HttpsProxyAgent(`http://${PROXY_HOST}:${port}`);
-  agent.options.headers = {
-    'Proxy-Authorization': `Basic ${auth}`
-  };
-  return agent;
+  const port = 10001 + (proxyIdx % 1000);
+  proxyIdx++;
+  return new HttpsProxyAgent(`http://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${port}`);
 }
 
-// ============ JWT 인증 ============
+// ============ JWT ============
 function requireLogin(req, res, next) {
   const token = req.cookies.token || req.headers.authorization?.replace('Bearer ', '');
-  if (!token) return res.status(401).json({ error: '로그인이 필요합니다.' });
-  
+  if (!token) return res.status(401).json({ error: '로그인 필요' });
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch (e) {
-    return res.status(401).json({ error: '유효하지 않은 토큰입니다.' });
+    return res.status(401).json({ error: '토큰 만료' });
   }
 }
 
-// ============ 인증 API ============
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-  
-  if (!user || !bcrypt.compareSync(password, user.password)) {
-    return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다.' });
-  }
-  
+  if (!user || !bcrypt.compareSync(password, user.password))
+    return res.status(401).json({ error: '아이디 또는 비밀번호 오류' });
   const token = jwt.sign({ userId: user.id, username: user.username, isAdmin: user.is_admin }, JWT_SECRET, { expiresIn: '7d' });
-  res.cookie('token', token, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 });
+  res.cookie('token', token, { httpOnly: true, maxAge: 7 * 86400000 });
   res.json({ success: true, token, user: { id: user.id, username: user.username, points: user.points, isAdmin: user.is_admin } });
 });
 
@@ -105,210 +90,121 @@ app.post('/api/logout', (req, res) => {
   res.json({ success: true });
 });
 
-// ============ 플레이스 크롤링 API ============
+// ============ 크롤링 ============
 app.post('/api/extract/place', requireLogin, async (req, res) => {
-  const { keyword, startRank, endRank } = req.body;
-  
-  if (!keyword || !startRank || !endRank) {
-    return res.status(400).json({ error: '키워드와 순위 구간을 입력해주세요.' });
-  }
-  
-  const count = endRank - startRank + 1;
+  const { keyword } = req.body;
+  if (!keyword) return res.status(400).json({ error: '키워드를 입력해주세요.' });
+
   const user = db.prepare('SELECT points FROM users WHERE id = ?').get(req.user.userId);
-  
-  if (user.points < count) {
-    return res.status(400).json({ error: `포인트가 부족합니다. 필요: ${count}P, 보유: ${user.points}P` });
-  }
-  
+  if (user.points < 75) return res.status(400).json({ error: `포인트 부족 (보유: ${user.points}P, 필요: 75P)` });
+
   try {
-    console.log(`\n========================================`);
-    console.log(`크롤링 시작: ${keyword}, ${startRank}~${endRank}위`);
-    console.log(`========================================`);
-    
-    // 1단계: 모바일 검색 페이지에서 Place ID 수집
-    const allPlaceIds = [];
-    
-    const searchUrl = `https://m.map.naver.com/search2/search.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5`;
-    console.log(`[1단계] 모바일 검색 페이지 요청...`);
-    
+    console.log(`\n크롤링: ${keyword} (1~75위)`);
+
+    // 1단계: 모바일 검색 → Place ID 수집
     const agent = getProxyAgent();
-    
-    const searchResponse = await axios.get(searchUrl, {
+    const searchUrl = `https://m.map.naver.com/search2/search.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5`;
+
+    console.log('모바일 검색 요청...');
+    const searchRes = await axios.get(searchUrl, {
       httpsAgent: agent,
       timeout: 30000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml',
         'Accept-Language': 'ko-KR,ko;q=0.9',
-        'Cache-Control': 'no-cache',
       }
     });
-    
-    const html = searchResponse.data;
-    console.log(`HTML 응답 크기: ${html.length}자`);
-    
-    // Place ID 추출 (여러 패턴)
-    const idPatterns = [
-      /place\/(\d{8,})/gi,
-      /"id"\s*:\s*"?(\d{8,})"?/gi,
-      /sid[=:][\s"']*(\d{8,})/gi,
-      /data-id="(\d{8,})"/gi,
-    ];
-    
-    for (const pattern of idPatterns) {
-      let match;
-      while ((match = pattern.exec(html)) !== null) {
-        if (!allPlaceIds.includes(match[1])) {
-          allPlaceIds.push(match[1]);
-        }
+
+    const html = searchRes.data;
+    console.log(`HTML: ${html.length}자`);
+
+    // Place ID 추출
+    const placeIds = [];
+    const patterns = [/place\/(\d{8,})/gi, /"id"\s*:\s*"?(\d{8,})"?/gi, /sid[=:][\s"']*(\d{8,})/gi];
+    for (const p of patterns) {
+      let m;
+      while ((m = p.exec(html)) !== null) {
+        if (!placeIds.includes(m[1])) placeIds.push(m[1]);
       }
     }
-    
-    console.log(`Place ID 수집 완료: ${allPlaceIds.length}개`);
-    
-    if (allPlaceIds.length === 0) {
-      return res.status(400).json({ error: '검색 결과를 찾을 수 없습니다.' });
-    }
-    
-    // 요청 범위 조정
-    const actualEnd = Math.min(endRank, allPlaceIds.length);
-    const targetIds = allPlaceIds.slice(startRank - 1, actualEnd);
-    
-    if (targetIds.length === 0) {
-      return res.status(400).json({ error: `검색 결과가 ${allPlaceIds.length}개뿐입니다. 시작 순위(${startRank})가 범위를 초과했습니다.` });
-    }
-    
-    console.log(`\n[2단계] 상세 정보 수집 시작: ${targetIds.length}건`);
-    
-    // 2단계: 각 Place의 상세 정보 수집 (5개씩 병렬 처리)
+
+    console.log(`Place ID: ${placeIds.length}개`);
+    if (placeIds.length === 0) return res.status(400).json({ error: '검색 결과 없음' });
+
+    // 2단계: 상세 정보 수집 (5개씩 병렬)
+    const targetIds = placeIds.slice(0, 75);
     const results = [];
-    const BATCH_SIZE = 5;
-    
-    for (let i = 0; i < targetIds.length; i += BATCH_SIZE) {
-      const batch = targetIds.slice(i, i + BATCH_SIZE);
-      
-      const batchPromises = batch.map(async (placeId, idx) => {
-        const rank = startRank + i + idx;
-        
+
+    for (let i = 0; i < targetIds.length; i += 5) {
+      const batch = targetIds.slice(i, i + 5);
+      const batchResults = await Promise.all(batch.map(async (pid, idx) => {
+        const rank = i + idx + 1;
         try {
-          const detailAgent = getProxyAgent();
-          const detailUrl = `https://m.place.naver.com/place/${placeId}/home`;
-          
-          const detailRes = await axios.get(detailUrl, {
-            httpsAgent: detailAgent,
+          const da = getProxyAgent();
+          const dRes = await axios.get(`https://m.place.naver.com/place/${pid}/home`, {
+            httpsAgent: da,
             timeout: 15000,
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
-              'Accept': 'text/html,application/xhtml+xml',
-            }
+            headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15' }
           });
-          
-          const detailHtml = detailRes.data;
+
+          const dHtml = dRes.data;
           let name = '', tel = '', address = '', category = '';
-          
-          // Apollo State에서 데이터 추출
-          const apolloMatch = detailHtml.match(/__APOLLO_STATE__\s*=\s*({.+?});?\s*<\/script>/s);
-          if (apolloMatch) {
+
+          // Apollo State
+          const am = dHtml.match(/__APOLLO_STATE__\s*=\s*({.+?});?\s*<\/script>/s);
+          if (am) {
             try {
-              const apolloData = JSON.parse(apolloMatch[1]);
-              
-              for (const key of Object.keys(apolloData)) {
-                const obj = apolloData[key];
-                if (obj && typeof obj === 'object') {
-                  // 이름
-                  if (!name && obj.name && typeof obj.name === 'string') {
-                    name = obj.name;
-                  }
-                  // 주소
-                  if (!address && (obj.roadAddress || obj.address)) {
-                    address = obj.roadAddress || obj.address;
-                  }
-                  // 카테고리
-                  if (!category && obj.category) {
-                    category = Array.isArray(obj.category) ? obj.category.join(' > ') : obj.category;
-                  }
-                  // 전화번호
-                  if (!tel) {
-                    tel = obj.phone || obj.tel || obj.virtualPhone || obj.phoneNumber || '';
-                  }
+              const ad = JSON.parse(am[1]);
+              for (const k of Object.keys(ad)) {
+                const o = ad[k];
+                if (o && typeof o === 'object') {
+                  if (!name && o.name && typeof o.name === 'string') name = o.name;
+                  if (!address && (o.roadAddress || o.address)) address = o.roadAddress || o.address;
+                  if (!category && o.category) category = Array.isArray(o.category) ? o.category.join(' > ') : o.category;
+                  if (!tel) tel = o.phone || o.tel || o.virtualPhone || '';
                 }
               }
-            } catch (e) {
-              // JSON 파싱 실패 무시
-            }
+            } catch (e) {}
           }
-          
-          // HTML에서 백업 추출
+
+          // 백업 추출
           if (!tel) {
-            const telPatterns = [
-              /"phone"\s*:\s*"([^"]+)"/,
-              /"tel"\s*:\s*"([^"]+)"/,
-              /"virtualPhone"\s*:\s*"([^"]+)"/,
-              /href="tel:([^"]+)"/,
-            ];
-            for (const p of telPatterns) {
-              const m = detailHtml.match(p);
-              if (m) { tel = m[1]; break; }
+            for (const tp of [/"phone":"([^"]+)"/, /"tel":"([^"]+)"/, /href="tel:([^"]+)"/]) {
+              const tm = dHtml.match(tp);
+              if (tm) { tel = tm[1]; break; }
             }
           }
-          
           if (!name) {
-            const nameMatch = detailHtml.match(/<meta\s+property="og:title"\s+content="([^"]+)"/);
-            if (nameMatch) {
-              name = nameMatch[1].split(':')[0].split('-')[0].trim();
-            }
+            const nm = dHtml.match(/<meta\s+property="og:title"\s+content="([^"]+)"/);
+            if (nm) name = nm[1].split(':')[0].split('-')[0].trim();
           }
-          
-          return { rank, name, tel, address, category, placeId };
-          
+
+          return { rank, name, tel, address, category, placeId: pid };
         } catch (e) {
-          console.log(`  [오류] ${placeId}: ${e.message}`);
-          return { rank, name: '', tel: '', address: '', category: '', placeId };
+          return { rank, name: '', tel: '', address: '', category: '', placeId: pid };
         }
-      });
-      
-      const batchResults = await Promise.all(batchPromises);
+      }));
+
       results.push(...batchResults);
-      
-      const progress = Math.min(i + BATCH_SIZE, targetIds.length);
-      console.log(`진행: ${progress}/${targetIds.length}`);
-      
-      // 배치 간 딜레이
-      if (i + BATCH_SIZE < targetIds.length) {
-        await new Promise(r => setTimeout(r, 200));
-      }
+      console.log(`진행: ${Math.min(i + 5, targetIds.length)}/${targetIds.length}`);
+      if (i + 5 < targetIds.length) await new Promise(r => setTimeout(r, 200));
     }
-    
+
     // 포인트 차감
-    const usedPoints = results.length;
-    const newPoints = user.points - usedPoints;
-    
-    db.prepare('UPDATE users SET points = ? WHERE id = ?').run(newPoints, req.user.userId);
-    db.prepare('INSERT INTO point_history (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(
-      req.user.userId, -usedPoints, 'use', `플레이스 추출: ${keyword} (${results.length}건)`
-    );
-    
-    const successCount = results.filter(r => r.name).length;
-    console.log(`\n크롤링 완료: ${results.length}건 (정보있음: ${successCount}건)`);
-    console.log(`========================================\n`);
-    
-    res.json({
-      success: true,
-      data: results,
-      usedPoints,
-      remainingPoints: newPoints,
-      message: allPlaceIds.length < endRank 
-        ? `검색 결과가 ${allPlaceIds.length}개뿐이어서 ${results.length}건만 추출되었습니다.`
-        : null
-    });
-    
+    const used = results.length;
+    const newPts = user.points - used;
+    db.prepare('UPDATE users SET points = ? WHERE id = ?').run(newPts, req.user.userId);
+    db.prepare('INSERT INTO point_history (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(req.user.userId, -used, 'use', `${keyword} (${used}건)`);
+
+    const ok = results.filter(r => r.name).length;
+    console.log(`완료: ${results.length}건 (성공: ${ok}건)\n`);
+
+    res.json({ success: true, data: results, usedPoints: used, remainingPoints: newPts });
   } catch (error) {
     console.error('크롤링 에러:', error.message);
-    res.status(500).json({ error: '데이터 추출 중 오류가 발생했습니다: ' + error.message });
+    res.status(500).json({ error: error.message });
   }
 });
 
-// ============ 서버 시작 ============
-app.listen(PORT, () => {
-  console.log(`서버 실행 중: http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`서버: http://localhost:${PORT}`));
