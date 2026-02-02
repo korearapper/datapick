@@ -1,6 +1,7 @@
 const express = require('express');
-const session = require('express-session');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
 const Database = require('better-sqlite3');
 const axios = require('axios');
 const { HttpsProxyAgent } = require('https-proxy-agent');
@@ -8,14 +9,13 @@ const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'datapick-secret-key-2024-very-long-string';
 
-// Railway 프록시 환경 대응
 app.set('trust proxy', 1);
 
 // Database 초기화
 const db = new Database('database.db');
 
-// 테이블 생성
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +47,7 @@ db.exec(`
   );
 `);
 
-// 관리자 계정 생성 (없으면)
+// 관리자 계정 생성
 const adminExists = db.prepare('SELECT * FROM users WHERE username = ?').get('admin');
 if (!adminExists) {
   const hashedPassword = bcrypt.hashSync('admin1234', 10);
@@ -61,10 +61,7 @@ for (let i = 10001; i <= 19999; i++) {
   proxies.push({
     host: 'kr.decodo.com',
     port: i,
-    auth: {
-      username: 'spuqtp2czv',
-      password: '1voaShrNj_2f4V3hgB'
-    }
+    auth: { username: 'spuqtp2czv', password: '1voaShrNj_2f4V3hgB' }
   });
 }
 
@@ -78,37 +75,57 @@ function getNextProxy() {
 // 미들웨어
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
-app.use(session({
-  secret: 'place-extractor-secret-key-2024',
-  resave: true,
-  saveUninitialized: false,
-  cookie: { 
-    maxAge: 24 * 60 * 60 * 1000,
-    secure: false,
-    httpOnly: true,
-    sameSite: 'lax'
-  }
-}));
 
-// 인증 미들웨어
+// JWT 토큰 생성
+function generateToken(user) {
+  return jwt.sign(
+    { userId: user.id, username: user.username, isAdmin: user.is_admin === 1 },
+    JWT_SECRET,
+    { expiresIn: '7d' }
+  );
+}
+
+// JWT 인증 미들웨어
 function requireLogin(req, res, next) {
-  if (!req.session.userId) {
+  const token = req.cookies.token || req.headers.authorization?.replace('Bearer ', '');
+  
+  if (!token) {
     return res.status(401).json({ error: '로그인이 필요합니다.' });
   }
-  next();
+  
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    res.clearCookie('token');
+    return res.status(401).json({ error: '로그인이 만료되었습니다.' });
+  }
 }
 
 function requireAdmin(req, res, next) {
-  if (!req.session.userId || !req.session.isAdmin) {
-    return res.status(403).json({ error: '관리자 권한이 필요합니다.' });
+  const token = req.cookies.token || req.headers.authorization?.replace('Bearer ', '');
+  
+  if (!token) {
+    return res.status(401).json({ error: '로그인이 필요합니다.' });
   }
-  next();
+  
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    if (!decoded.isAdmin) {
+      return res.status(403).json({ error: '관리자 권한이 필요합니다.' });
+    }
+    req.user = decoded;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: '로그인이 만료되었습니다.' });
+  }
 }
 
 // ============ 인증 API ============
 
-// 회원가입
 app.post('/api/register', (req, res) => {
   const { username, password } = req.body;
   
@@ -126,30 +143,31 @@ app.post('/api/register', (req, res) => {
   }
   
   const hashedPassword = bcrypt.hashSync(password, 10);
-  const result = db.prepare('INSERT INTO users (username, password, points) VALUES (?, ?, ?)').run(username, hashedPassword, 0);
+  db.prepare('INSERT INTO users (username, password, points) VALUES (?, ?, ?)').run(username, hashedPassword, 0);
   
-  res.json({ success: true, message: '회원가입이 완료되었습니다.' });
+  res.json({ success: true });
 });
 
-// 로그인
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
   
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-  if (!user) {
+  if (!user || !bcrypt.compareSync(password, user.password)) {
     return res.status(400).json({ error: '아이디 또는 비밀번호가 일치하지 않습니다.' });
   }
   
-  if (!bcrypt.compareSync(password, user.password)) {
-    return res.status(400).json({ error: '아이디 또는 비밀번호가 일치하지 않습니다.' });
-  }
+  const token = generateToken(user);
   
-  req.session.userId = user.id;
-  req.session.username = user.username;
-  req.session.isAdmin = user.is_admin === 1;
+  res.cookie('token', token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: 7 * 24 * 60 * 60 * 1000
+  });
   
   res.json({ 
-    success: true, 
+    success: true,
+    token,
     user: {
       id: user.id,
       username: user.username,
@@ -159,15 +177,16 @@ app.post('/api/login', (req, res) => {
   });
 });
 
-// 로그아웃
 app.post('/api/logout', (req, res) => {
-  req.session.destroy();
+  res.clearCookie('token');
   res.json({ success: true });
 });
 
-// 내 정보
 app.get('/api/me', requireLogin, (req, res) => {
-  const user = db.prepare('SELECT id, username, points, is_admin FROM users WHERE id = ?').get(req.session.userId);
+  const user = db.prepare('SELECT id, username, points, is_admin FROM users WHERE id = ?').get(req.user.userId);
+  if (!user) {
+    return res.status(404).json({ error: '사용자를 찾을 수 없습니다.' });
+  }
   res.json({
     id: user.id,
     username: user.username,
@@ -178,13 +197,11 @@ app.get('/api/me', requireLogin, (req, res) => {
 
 // ============ 관리자 API ============
 
-// 전체 회원 목록
 app.get('/api/admin/users', requireAdmin, (req, res) => {
   const users = db.prepare('SELECT id, username, points, is_admin, created_at FROM users ORDER BY created_at DESC').all();
   res.json(users);
 });
 
-// 포인트 지급/차감
 app.post('/api/admin/points', requireAdmin, (req, res) => {
   const { userId, amount, description } = req.body;
   
@@ -204,18 +221,21 @@ app.post('/api/admin/points', requireAdmin, (req, res) => {
   
   db.prepare('UPDATE users SET points = ? WHERE id = ?').run(newPoints, userId);
   db.prepare('INSERT INTO point_history (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(
-    userId, 
-    amount, 
-    amount > 0 ? 'charge' : 'deduct',
-    description || (amount > 0 ? '관리자 지급' : '관리자 차감')
+    userId, amount, amount > 0 ? 'charge' : 'deduct', description || (amount > 0 ? '관리자 지급' : '관리자 차감')
   );
   
   res.json({ success: true, newPoints });
 });
 
+// ============ 히스토리 API ============
+
+app.get('/api/history/points', requireLogin, (req, res) => {
+  const history = db.prepare('SELECT * FROM point_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 50').all(req.user.userId);
+  res.json(history);
+});
+
 // ============ 크롤링 API ============
 
-// 네이버 플레이스 크롤링
 app.post('/api/extract/place', requireLogin, async (req, res) => {
   const { keyword, startRank, endRank } = req.body;
   
@@ -228,8 +248,7 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
     return res.status(400).json({ error: '올바른 순위 구간을 입력해주세요.' });
   }
   
-  // 포인트 체크
-  const user = db.prepare('SELECT points FROM users WHERE id = ?').get(req.session.userId);
+  const user = db.prepare('SELECT points FROM users WHERE id = ?').get(req.user.userId);
   if (user.points < count) {
     return res.status(400).json({ error: `포인트가 부족합니다. 필요: ${count}P, 보유: ${user.points}P` });
   }
@@ -240,6 +259,8 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
     const startPage = Math.floor((startRank - 1) / pageSize) + 1;
     const endPage = Math.floor((endRank - 1) / pageSize) + 1;
     
+    console.log(`크롤링 시작: ${keyword}, ${startRank}~${endRank}위`);
+    
     for (let page = startPage; page <= endPage; page++) {
       const proxy = getNextProxy();
       const proxyUrl = `http://${proxy.auth.username}:${proxy.auth.password}@${proxy.host}:${proxy.port}`;
@@ -248,86 +269,68 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       const start = (page - 1) * pageSize + 1;
       const url = `https://map.naver.com/p/api/search/allSearch?query=${encodeURIComponent(keyword)}&type=all&searchCoord=&boundary=&start=${start}&display=${pageSize}`;
       
+      console.log(`페이지 ${page} 요청 (프록시: ${proxy.port})`);
+      
       const response = await axios.get(url, {
         httpsAgent: agent,
+        timeout: 30000,
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+          'Accept': 'application/json, text/plain, */*',
           'Accept-Language': 'ko-KR,ko;q=0.9',
-          'Referer': 'https://map.naver.com/'
-        },
-        timeout: 30000
+          'Referer': 'https://m.map.naver.com/'
+        }
       });
       
-      const places = response.data?.result?.place?.list || [];
+      const data = response.data;
+      const places = data?.result?.place?.list || [];
       
       for (const place of places) {
         const rank = start + places.indexOf(place);
         if (rank >= startRank && rank <= endRank) {
           results.push({
-            rank: rank,
+            rank,
             name: place.name || '',
             tel: place.tel || place.phone || '',
             address: place.roadAddress || place.address || '',
-            category: place.category || ''
+            category: place.category ? place.category.join(' > ') : ''
           });
         }
       }
       
-      // 요청 간격
-      await new Promise(resolve => setTimeout(resolve, 500));
+      if (page < endPage) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     }
     
-    // 포인트 차감
-    const actualCount = results.length;
-    if (actualCount > 0) {
-      db.prepare('UPDATE users SET points = points - ? WHERE id = ?').run(actualCount, req.session.userId);
-      db.prepare('INSERT INTO point_history (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(
-        req.session.userId, -actualCount, 'use', `플레이스 추출: ${keyword} (${actualCount}건)`
-      );
-      db.prepare('INSERT INTO extraction_history (user_id, keyword, platform, count) VALUES (?, ?, ?, ?)').run(
-        req.session.userId, keyword, 'place', actualCount
-      );
-    }
+    results.sort((a, b) => a.rank - b.rank);
     
-    const updatedUser = db.prepare('SELECT points FROM users WHERE id = ?').get(req.session.userId);
+    const usedPoints = results.length;
+    const newPoints = user.points - usedPoints;
     
-    res.json({ 
-      success: true, 
+    db.prepare('UPDATE users SET points = ? WHERE id = ?').run(newPoints, req.user.userId);
+    db.prepare('INSERT INTO point_history (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(
+      req.user.userId, -usedPoints, 'use', `플레이스 추출: ${keyword} (${results.length}건)`
+    );
+    db.prepare('INSERT INTO extraction_history (user_id, keyword, platform, count) VALUES (?, ?, ?, ?)').run(
+      req.user.userId, keyword, 'place', results.length
+    );
+    
+    console.log(`크롤링 완료: ${results.length}건`);
+    
+    res.json({
+      success: true,
       data: results,
-      usedPoints: actualCount,
-      remainingPoints: updatedUser.points
+      usedPoints,
+      remainingPoints: newPoints
     });
     
   } catch (error) {
     console.error('크롤링 에러:', error.message);
-    res.status(500).json({ error: '크롤링 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.' });
+    res.status(500).json({ error: '데이터 추출 중 오류가 발생했습니다: ' + error.message });
   }
 });
 
-// 포인트 사용 내역
-app.get('/api/history/points', requireLogin, (req, res) => {
-  const history = db.prepare(`
-    SELECT * FROM point_history 
-    WHERE user_id = ? 
-    ORDER BY created_at DESC 
-    LIMIT 50
-  `).all(req.session.userId);
-  res.json(history);
-});
-
-// 추출 내역
-app.get('/api/history/extractions', requireLogin, (req, res) => {
-  const history = db.prepare(`
-    SELECT * FROM extraction_history 
-    WHERE user_id = ? 
-    ORDER BY created_at DESC 
-    LIMIT 50
-  `).all(req.session.userId);
-  res.json(history);
-});
-
-// 서버 시작
 app.listen(PORT, () => {
   console.log(`서버 실행 중: http://localhost:${PORT}`);
 });

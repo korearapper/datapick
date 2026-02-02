@@ -341,7 +341,7 @@
     }
     .impact-grid {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(3, 1fr);
       gap: 24px;
     }
     .impact-item {
@@ -823,10 +823,6 @@
           <div class="impact-label">1,000건 추출</div>
         </div>
         <div class="impact-item">
-          <div class="impact-number">1원</div>
-          <div class="impact-label">건당 비용</div>
-        </div>
-        <div class="impact-item">
           <div class="impact-number">24/7</div>
           <div class="impact-label">무중단 서비스</div>
         </div>
@@ -1030,6 +1026,7 @@
 
 <script>
 let currentUser = null;
+let authToken = localStorage.getItem('authToken') || null;
 let extractedData = { place: [], store: [], coupang: [] };
 
 // Nav scroll effect
@@ -1037,19 +1034,37 @@ window.addEventListener('scroll', () => {
   document.getElementById('mainNav')?.classList.toggle('scrolled', window.scrollY > 50);
 });
 
+// API 요청 헬퍼
+async function apiRequest(url, options = {}) {
+  const headers = { 'Content-Type': 'application/json', ...options.headers };
+  if (authToken) {
+    headers['Authorization'] = `Bearer ${authToken}`;
+  }
+  return fetch(url, { ...options, headers });
+}
+
 // Init
 async function init() {
-  try {
-    const res = await fetch('/api/me');
-    if (res.ok) {
-      currentUser = await res.json();
-      showDashboard();
+  if (authToken) {
+    try {
+      const res = await apiRequest('/api/me');
+      if (res.ok) {
+        currentUser = await res.json();
+        showDashboard();
+      } else {
+        localStorage.removeItem('authToken');
+        authToken = null;
+      }
+    } catch (e) {
+      localStorage.removeItem('authToken');
+      authToken = null;
     }
-  } catch (e) {}
+  }
   
   document.getElementById('placeStartRank')?.addEventListener('input', updateEstimate);
   document.getElementById('placeEndRank')?.addEventListener('input', updateEstimate);
   document.getElementById('loginPassword')?.addEventListener('keypress', e => { if (e.key === 'Enter') login(); });
+  document.getElementById('regPassword')?.addEventListener('keypress', e => { if (e.key === 'Enter') register(); });
 }
 
 // Auth
@@ -1090,6 +1105,8 @@ async function login() {
     });
     const data = await res.json();
     if (res.ok) {
+      authToken = data.token;
+      localStorage.setItem('authToken', authToken);
       currentUser = data.user;
       hideAuth();
       showDashboard();
@@ -1124,6 +1141,8 @@ async function register() {
 
 async function logout() {
   await fetch('/api/logout', { method: 'POST' });
+  authToken = null;
+  localStorage.removeItem('authToken');
   currentUser = null;
   document.getElementById('dashboardPage').classList.add('hidden');
   document.getElementById('landingPage').classList.remove('hidden');
@@ -1168,9 +1187,8 @@ async function extractPlace() {
   document.getElementById('placeResult').classList.add('hidden');
   
   try {
-    const res = await fetch('/api/extract/place', {
+    const res = await apiRequest('/api/extract/place', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ keyword, startRank, endRank })
     });
     const data = await res.json();
@@ -1218,7 +1236,7 @@ function downloadExcel(type) {
 }
 
 async function loadHistory() {
-  const res = await fetch('/api/history/points');
+  const res = await apiRequest('/api/history/points');
   const data = await res.json();
   document.querySelector('#historyTable tbody').innerHTML = data.map(item => `
     <tr>
@@ -1231,7 +1249,7 @@ async function loadHistory() {
 }
 
 async function loadAdminUsers() {
-  const res = await fetch('/api/admin/users');
+  const res = await apiRequest('/api/admin/users');
   const users = await res.json();
   document.getElementById('adminUserList').innerHTML = users.map(user => `
     <div class="admin-card">
@@ -1253,9 +1271,8 @@ async function givePoints(userId, direction) {
   const amount = parseInt(input.value) * direction;
   if (!amount) return alert('포인트를 입력해주세요.');
   
-  const res = await fetch('/api/admin/points', {
+  const res = await apiRequest('/api/admin/points', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ userId, amount })
   });
   
