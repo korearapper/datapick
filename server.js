@@ -285,7 +285,7 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
       
       // 네트워크 요청 인터셉트 설정
-      let apiData = null;
+      let searchApiData = null;
       
       await page.setRequestInterception(true);
       
@@ -295,15 +295,23 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       
       page.on('response', async response => {
         const url = response.url();
-        // 검색 API 응답 캡처
-        if (url.includes('/api/search') || url.includes('place/list') || url.includes('allSearch')) {
+        // allSearch API 응답만 캡처
+        if (url.includes('allSearch') && url.includes('query=')) {
           try {
-            const json = await response.json();
-            console.log('API 응답 캡처: ' + url.substring(0, 100));
-            if (json && (json.result || json.data || json.list)) {
-              apiData = json;
+            const text = await response.text();
+            const json = JSON.parse(text);
+            console.log('allSearch API 캡처 성공!');
+            
+            // place 데이터 추출
+            const placeList = json?.result?.place?.list || [];
+            console.log('API 응답에서 place 개수: ' + placeList.length);
+            
+            if (placeList.length > 0) {
+              searchApiData = placeList;
             }
-          } catch (e) {}
+          } catch (e) {
+            console.log('API 파싱 에러: ' + e.message);
+          }
         }
       });
       
@@ -314,39 +322,86 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       
       // API 응답 대기
       console.log('API 응답 대기...');
-      for (let i = 0; i < 10; i++) {
-        if (apiData) break;
-        await new Promise(r => setTimeout(r, 2000));
-        console.log('대기 중... ' + (i + 1) + '/10');
+      for (let i = 0; i < 15; i++) {
+        if (searchApiData && searchApiData.length > 0) {
+          console.log('API 데이터 수신 완료: ' + searchApiData.length + '개');
+          break;
+        }
+        await new Promise(r => setTimeout(r, 1000));
+        console.log('대기 중... ' + (i + 1) + '/15');
       }
       
       // API 응답에서 데이터 추출
-      if (apiData) {
-        console.log('API 데이터 발견!');
-        const items = apiData.result?.place?.list || 
-                     apiData.result?.list || 
-                     apiData.data?.list ||
-                     apiData.list || [];
+      if (searchApiData && searchApiData.length > 0) {
+        console.log('API 데이터 처리 중...');
         
-        console.log('API에서 ' + items.length + '개 발견');
-        
-        for (const item of items) {
+        for (const item of searchApiData) {
           allPlaceData.push({
             placeId: String(item.id || item.sid || ''),
             name: item.name || item.title || '',
-            category: item.category || '',
+            tel: item.tel || item.phone || item.virtualPhone || '',
+            category: Array.isArray(item.category) ? item.category.join(' > ') : (item.category || ''),
             address: item.roadAddress || item.address || ''
           });
         }
+        
+        console.log('API에서 ' + allPlaceData.length + '개 추출 완료');
       }
       
-      // API 응답이 없으면 페이지에서 직접 추출 시도
+      // API 데이터가 부족하면 스크롤로 추가 로드
+      if (allPlaceData.length < endRank && allPlaceData.length > 0) {
+        console.log('스크롤로 추가 데이터 로드...');
+        
+        // iframe 찾기
+        let frame = page;
+        const iframeHandle = await page.$('iframe#searchIframe');
+        if (iframeHandle) {
+          const contentFrame = await iframeHandle.contentFrame();
+          if (contentFrame) frame = contentFrame;
+        }
+        
+        for (let scroll = 0; scroll < 20 && allPlaceData.length < endRank; scroll++) {
+          const prevCount = allPlaceData.length;
+          
+          // 스크롤
+          await frame.evaluate(() => {
+            const scrollEl = document.querySelector('#_pcmap_list_scroll_container') ||
+                            document.querySelector('[class*="scroll"]') ||
+                            document.body;
+            if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+            window.scrollTo(0, document.body.scrollHeight);
+          });
+          
+          await new Promise(r => setTimeout(r, 1500));
+          
+          // 새 API 데이터 확인 (이미 캡처됨)
+          if (searchApiData && searchApiData.length > allPlaceData.length) {
+            for (let i = allPlaceData.length; i < searchApiData.length; i++) {
+              const item = searchApiData[i];
+              allPlaceData.push({
+                placeId: String(item.id || item.sid || ''),
+                name: item.name || item.title || '',
+                tel: item.tel || item.phone || '',
+                category: Array.isArray(item.category) ? item.category.join(' > ') : (item.category || ''),
+                address: item.roadAddress || item.address || ''
+              });
+            }
+          }
+          
+          console.log('스크롤 ' + (scroll + 1) + ': ' + allPlaceData.length + '개');
+          
+          if (allPlaceData.length === prevCount) {
+            // 3번 연속 변화 없으면 종료
+            if (scroll > 2) break;
+          }
+        }
+      }
+      
+      // API 응답이 전혀 없으면 HTML에서 추출
       if (allPlaceData.length === 0) {
-        console.log('API 응답 없음, 페이지에서 직접 추출...');
+        console.log('API 응답 없음, HTML에서 직접 추출...');
         
-        // 페이지 전체 HTML에서 place ID 추출
         const pageContent = await page.content();
-        
         const placeIdPattern = /place\/(\d{8,})/g;
         const foundIds = new Set();
         let match;
@@ -361,41 +416,10 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
           allPlaceData.push({
             placeId: placeId,
             name: '',
+            tel: '',
             category: '',
             address: ''
           });
-        }
-      }
-      
-      // 스크롤해서 더 많은 데이터 로드
-      if (allPlaceData.length < endRank) {
-        console.log('스크롤로 추가 데이터 로드...');
-        
-        for (let scroll = 0; scroll < 10 && allPlaceData.length < endRank; scroll++) {
-          await page.evaluate(() => {
-            window.scrollTo(0, document.body.scrollHeight);
-          });
-          
-          await new Promise(r => setTimeout(r, 2000));
-          
-          // 새로운 place ID 추출
-          const pageContent = await page.content();
-          const placeIdPattern = /place\/(\d{8,})/g;
-          let match;
-          
-          while ((match = placeIdPattern.exec(pageContent)) !== null) {
-            const exists = allPlaceData.some(p => p.placeId === match[1]);
-            if (!exists) {
-              allPlaceData.push({
-                placeId: match[1],
-                name: '',
-                category: '',
-                address: ''
-              });
-            }
-          }
-          
-          console.log('스크롤 ' + (scroll + 1) + ': ' + allPlaceData.length + '개');
         }
       }
       
