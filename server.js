@@ -295,32 +295,69 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       // API 직접 호출로 페이지네이션
       console.log('API 직접 호출 시작...');
       
-      for (let pageNum = 1; pageNum <= 15 && allPlaceData.length < endRank; pageNum++) {
-        const apiUrl = 'https://map.naver.com/p/api/search/allSearch?query=' + encodeURIComponent(keyword) + 
-                      '&type=all&searchCoord=&boundary=&page=' + pageNum + '&displayCount=100&isPlaceRecommendationReplace=true&lang=ko';
+      for (let start = 1; start <= 500 && allPlaceData.length < endRank; start += 100) {
+        // 다양한 API URL 형식 시도
+        const apiUrls = [
+          'https://map.naver.com/p/api/search/allSearch?query=' + encodeURIComponent(keyword) + '&type=all&start=' + start + '&display=100&lang=ko',
+          'https://map.naver.com/p/api/search/allSearch?query=' + encodeURIComponent(keyword) + '&type=place&start=' + start + '&display=100',
+        ];
         
-        console.log('API 페이지 ' + pageNum + ' 호출...');
+        const apiUrl = apiUrls[0];
+        console.log('API 호출 (start=' + start + ')...');
         
         try {
           const response = await page.evaluate(async (url) => {
-            const res = await fetch(url, {
-              method: 'GET',
-              credentials: 'include',
-              headers: {
-                'Accept': 'application/json',
-                'Referer': 'https://map.naver.com/'
-              }
-            });
-            return await res.text();
+            try {
+              const res = await fetch(url, {
+                method: 'GET',
+                credentials: 'include',
+                headers: {
+                  'Accept': 'application/json, text/plain, */*',
+                  'Referer': 'https://map.naver.com/'
+                }
+              });
+              const text = await res.text();
+              return { status: res.status, text: text.substring(0, 2000) };
+            } catch (e) {
+              return { error: e.message };
+            }
           }, apiUrl);
           
-          const json = JSON.parse(response);
-          const placeList = json?.result?.place?.list || [];
+          console.log('응답 상태: ' + (response.status || 'error'));
           
-          console.log('페이지 ' + pageNum + ': ' + placeList.length + '개');
+          if (response.error) {
+            console.log('Fetch 에러: ' + response.error);
+            break;
+          }
+          
+          // 응답 파싱
+          let json;
+          try {
+            json = JSON.parse(response.text.includes('{') ? response.text : '{}');
+          } catch (e) {
+            console.log('JSON 파싱 실패, 응답: ' + response.text.substring(0, 300));
+            break;
+          }
+          
+          // 다양한 응답 구조 시도
+          const placeList = json?.result?.place?.list || 
+                           json?.result?.site?.list ||
+                           json?.result?.list || 
+                           json?.place?.list ||
+                           [];
+          
+          console.log('응답에서 ' + placeList.length + '개 발견');
           
           if (placeList.length === 0) {
-            console.log('더 이상 결과 없음');
+            // 응답 구조 디버깅
+            console.log('응답 키: ' + Object.keys(json || {}).join(', '));
+            if (json?.result) {
+              console.log('result 키: ' + Object.keys(json.result).join(', '));
+            }
+            
+            if (start === 1) {
+              console.log('첫 페이지도 0개, 응답 샘플: ' + response.text.substring(0, 500));
+            }
             break;
           }
           
@@ -340,7 +377,6 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
           
           console.log('누적: ' + allPlaceData.length + '개');
           
-          // 결과가 100개 미만이면 마지막 페이지
           if (placeList.length < 100) {
             console.log('마지막 페이지');
             break;
