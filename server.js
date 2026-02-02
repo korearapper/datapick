@@ -179,17 +179,17 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
 
         // 이름 못 찾았으면 재시도
         if (!name && retry < 3) {
-          await new Promise(r => setTimeout(r, 1000 + retry * 1000));
+          await new Promise(r => setTimeout(r, 1500 + retry * 1500));
           return fetchPlace(pid, rank, retry + 1);
         }
 
         return { rank, name, tel, address, category, placeId: pid };
       } catch (e) {
         const is429 = e.response?.status === 429;
-        if (retry < 3) {
-          // 429면 길게 대기, 그 외는 짧게
-          const wait = is429 ? 3000 + retry * 2000 : 1000 + retry * 500;
-          console.log(`  ${rank}위 ${is429 ? '429 차단' : '에러'} → ${(wait/1000).toFixed(1)}초 후 재시도 ${retry + 1}/3`);
+        if (retry < 5) {
+          // 429면 5~15초 점진 대기
+          const wait = is429 ? 5000 + retry * 2000 : 1500 + retry * 1000;
+          if (retry === 0 || is429) console.log(`  ${rank}위 ${is429 ? '429' : '에러'} → ${(wait/1000).toFixed(0)}초 후 재시도 ${retry + 1}/5`);
           await new Promise(r => setTimeout(r, wait));
           return fetchPlace(pid, rank, retry + 1);
         }
@@ -197,18 +197,30 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       }
     }
 
-    for (let i = 0; i < targetIds.length; i += BATCH) {
-      const batch = targetIds.slice(i, i + BATCH);
+    let currentBatch = 3;
+    let hit429 = false;
+
+    for (let i = 0; i < targetIds.length; i += currentBatch) {
+      const batch = targetIds.slice(i, i + currentBatch);
       const br = await Promise.all(batch.map((pid, idx) => fetchPlace(pid, sr + i + idx)));
       results.push(...br);
       
-      const done = Math.min(i + BATCH, targetIds.length);
+      // 이번 배치에서 429 실패 있었는지 체크
+      const batchFails = br.filter(r => !r.name).length;
+      if (batchFails > 0 && !hit429) {
+        hit429 = true;
+        currentBatch = 1; // 429 터지면 1개씩 순차로
+        console.log(`⚠️ 429 감지 → 배치 1개씩 + 딜레이 강화`);
+      }
+      
+      const done = Math.min(i + currentBatch, targetIds.length);
       const okSoFar = results.filter(r => r.name).length;
       console.log(`진행: ${done}/${targetIds.length} (성공: ${okSoFar})`);
       
-      // 배치 간 랜덤 딜레이 (0.5~1.5초)
-      if (i + BATCH < targetIds.length) {
-        await new Promise(r => setTimeout(r, 500 + Math.floor(Math.random() * 1000)));
+      if (i + currentBatch < targetIds.length) {
+        // 429 터진 후엔 2~4초 랜덤, 정상이면 0.5~1.5초
+        const delay = hit429 ? 2000 + Math.floor(Math.random() * 2000) : 500 + Math.floor(Math.random() * 1000);
+        await new Promise(r => setTimeout(r, delay));
       }
     }
 
