@@ -256,97 +256,125 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
   try {
     console.log(`크롤링 시작: ${keyword}, ${startRank}~${endRank}위`);
     
-    // 네이버 지도 내부 API 직접 호출
     const allPlaceIds = [];
-    const allPlaceData = []; // ID와 함께 기본 정보도 저장
+    const allPlaceData = [];
     
-    // 네이버 지도 검색 API (실제 사용되는 엔드포인트)
-    for (let page = 1; page <= 10 && allPlaceIds.length < endRank + 20; page++) {
+    // PC 네이버 지도 검색 - 페이지네이션 방식
+    for (let page = 1; page <= 20 && allPlaceIds.length < endRank + 20; page++) {
       const proxy = getNextProxy();
       const proxyUrl = `http://${proxy.auth.username}:${proxy.auth.password}@${proxy.host}:${proxy.port}`;
       const agent = new HttpsProxyAgent(proxyUrl);
       
-      // 네이버 지도 실제 검색 API
-      const searchUrl = `https://pcmap-api.place.naver.com/place/graphql`;
+      // PC 지도 검색 결과 페이지 (페이지당 약 50개)
+      const searchUrl = `https://pcmap.place.naver.com/restaurant/list?query=${encodeURIComponent(keyword)}&page=${page}`;
       
-      const graphqlQuery = {
-        operationName: "getPlacesList",
-        variables: {
-          input: {
-            query: keyword,
-            start: (page - 1) * 50 + 1,
-            display: 50,
-            adult: false,
-            spq: false,
-            queryRank: ""
-          },
-          isNmap: true
-        },
-        query: `query getPlacesList($input: PlacesInput, $isNmap: Boolean!) {
-          businesses: places(input: $input) {
-            total
-            items {
-              id
-              name
-              tel
-              roadAddress
-              address
-              category
-            }
-          }
-        }`
-      };
-      
-      console.log(`GraphQL 페이지 ${page} 요청...`);
+      console.log(`PC 지도 페이지 ${page} 요청...`);
       
       try {
-        const response = await axios.post(searchUrl, graphqlQuery, {
+        const response = await axios.get(searchUrl, {
           httpsAgent: agent,
           timeout: 15000,
           headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'Referer': 'https://map.naver.com/',
-            'Origin': 'https://map.naver.com',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.9',
           }
         });
         
-        const data = response.data;
-        const items = data?.data?.businesses?.items || [];
+        const html = response.data;
+        const beforeCount = allPlaceIds.length;
         
-        console.log(`페이지 ${page}: ${items.length}개 발견`);
-        
-        if (items.length === 0) break;
-        
-        for (const item of items) {
-          if (item.id && !allPlaceIds.includes(String(item.id))) {
-            allPlaceIds.push(String(item.id));
-            allPlaceData.push({
-              id: String(item.id),
-              name: item.name || '',
-              tel: item.tel || '',
-              address: item.roadAddress || item.address || '',
-              category: item.category || ''
-            });
+        // __NEXT_DATA__에서 검색 결과 추출 (Next.js 앱)
+        const nextDataMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>(.+?)<\/script>/s);
+        if (nextDataMatch) {
+          try {
+            const nextData = JSON.parse(nextDataMatch[1]);
+            const searchData = nextData?.props?.pageProps?.searchData || 
+                              nextData?.props?.initialState?.search || 
+                              nextData?.props?.pageProps?.initialData;
+            
+            if (searchData) {
+              const items = searchData.items || searchData.list || searchData.businesses || [];
+              for (const item of items) {
+                const id = String(item.id || item.sid || item.placeId);
+                if (id && !allPlaceIds.includes(id)) {
+                  allPlaceIds.push(id);
+                  allPlaceData.push({
+                    id,
+                    name: item.name || item.title || '',
+                    tel: item.tel || item.phone || item.virtualPhone || '',
+                    address: item.roadAddress || item.address || '',
+                    category: Array.isArray(item.category) ? item.category.join(' > ') : (item.category || '')
+                  });
+                }
+              }
+            }
+          } catch (e) {
+            console.log(`NEXT_DATA 파싱 실패: ${e.message}`);
           }
         }
         
-        console.log(`총 ${allPlaceIds.length}개`);
+        // Apollo State에서도 추출
+        const apolloMatch = html.match(/__APOLLO_STATE__\s*=\s*({.+?});?\s*<\/script>/s);
+        if (apolloMatch) {
+          try {
+            const apolloData = JSON.parse(apolloMatch[1]);
+            for (const key of Object.keys(apolloData)) {
+              if (key.match(/Place.*:\d{8,}/) || key.match(/Restaurant:\d{8,}/)) {
+                const idMatch = key.match(/(\d{8,})/);
+                if (idMatch && !allPlaceIds.includes(idMatch[1])) {
+                  const item = apolloData[key];
+                  allPlaceIds.push(idMatch[1]);
+                  allPlaceData.push({
+                    id: idMatch[1],
+                    name: item.name || '',
+                    tel: item.phone || item.tel || '',
+                    address: item.roadAddress || item.address || '',
+                    category: item.category || ''
+                  });
+                }
+              }
+            }
+          } catch (e) {}
+        }
         
-        if (items.length < 50) break;
+        // HTML에서 직접 ID 추출
+        const patterns = [
+          /place\/(\d{8,})/gi,
+          /data-id="(\d{8,})"/gi,
+          /"id"\s*:\s*"?(\d{8,})"?/gi,
+          /sid[=:][\s"']*(\d{8,})/gi,
+        ];
+        
+        for (const pattern of patterns) {
+          let match;
+          pattern.lastIndex = 0;
+          while ((match = pattern.exec(html)) !== null) {
+            if (!allPlaceIds.includes(match[1])) {
+              allPlaceIds.push(match[1]);
+            }
+          }
+        }
+        
+        const added = allPlaceIds.length - beforeCount;
+        console.log(`페이지 ${page}: +${added}개 (총 ${allPlaceIds.length}개)`);
+        
+        if (added === 0) {
+          console.log('더 이상 새 결과 없음');
+          break;
+        }
         
       } catch (e) {
-        console.log(`GraphQL 페이지 ${page} 실패: ${e.message}`);
+        console.log(`페이지 ${page} 실패: ${e.message}`);
         
-        // GraphQL 실패시 HTML 파싱으로 폴백
+        // 첫 페이지 실패시 모바일로 폴백
         if (page === 1) {
-          console.log('HTML 파싱으로 전환...');
+          console.log('모바일 버전으로 전환...');
           
-          const htmlUrl = `https://m.map.naver.com/search2/search.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5`;
+          const mobileUrl = `https://m.map.naver.com/search2/search.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5`;
           
           try {
-            const htmlResponse = await axios.get(htmlUrl, {
+            const mobileResponse = await axios.get(mobileUrl, {
               httpsAgent: agent,
               timeout: 15000,
               headers: {
@@ -354,51 +382,45 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
               }
             });
             
-            const html = htmlResponse.data;
+            const html = mobileResponse.data;
             const patterns = [/place\/(\d{8,})/gi, /"id"\s*:\s*"?(\d{8,})"?/gi, /sid[=:][\s"']*(\d{8,})/gi];
             
             for (const pattern of patterns) {
               let match;
               pattern.lastIndex = 0;
               while ((match = pattern.exec(html)) !== null) {
-                if (!allPlaceIds.includes(match[1])) {
-                  allPlaceIds.push(match[1]);
-                }
+                if (!allPlaceIds.includes(match[1])) allPlaceIds.push(match[1]);
               }
             }
             
-            console.log(`HTML에서 ${allPlaceIds.length}개 추출`);
-          } catch (htmlErr) {
-            console.log(`HTML도 실패: ${htmlErr.message}`);
+            console.log(`모바일에서 ${allPlaceIds.length}개 추출`);
+          } catch (mobileErr) {
+            console.log(`모바일도 실패: ${mobileErr.message}`);
           }
         }
         break;
       }
       
-      await new Promise(r => setTimeout(r, 300));
+      await new Promise(r => setTimeout(r, 500));
     }
     
-    console.log(`총 Place ID: ${allPlaceIds.length}개`);
+    console.log(`총 Place ID: ${allPlaceIds.length}개, 상세정보: ${allPlaceData.length}개`);
     
     if (allPlaceIds.length === 0) {
       return res.status(400).json({ error: '검색 결과를 가져올 수 없습니다.' });
     }
     
-    if (allPlaceIds.length < startRank) {
-      return res.status(400).json({ error: `검색 결과가 ${allPlaceIds.length}개뿐입니다. 시작 순위(${startRank})보다 적습니다.` });
-    }
-    
-    // GraphQL에서 이미 데이터를 가져왔으면 바로 사용
-    const useGraphQLData = allPlaceData.length > 0;
+    // 상세 정보가 있으면 바로 사용
+    const useDirectData = allPlaceData.length >= Math.min(endRank, allPlaceIds.length);
     
     // 2단계: 상세 정보 가져오기
-    const targetIds = allPlaceIds.slice(startRank - 1, endRank);
+    const targetIds = allPlaceIds.slice(startRank - 1, Math.min(endRank, allPlaceIds.length));
     const results = [];
     
-    if (useGraphQLData) {
-      // GraphQL에서 이미 데이터를 가져왔으면 바로 사용
-      console.log('GraphQL 데이터 사용');
-      const targetData = allPlaceData.slice(startRank - 1, endRank);
+    if (useDirectData && allPlaceData.length >= startRank) {
+      // 이미 상세 정보가 있으면 바로 사용
+      console.log('상세 정보 직접 사용');
+      const targetData = allPlaceData.slice(startRank - 1, Math.min(endRank, allPlaceData.length));
       
       for (let i = 0; i < targetData.length; i++) {
         const data = targetData[i];
@@ -412,7 +434,7 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
         });
       }
       
-      console.log(`GraphQL에서 ${results.length}건 완료`);
+      console.log(`직접 데이터에서 ${results.length}건 완료`);
       
     } else {
       // HTML에서 ID만 가져왔으면 상세 페이지에서 정보 추출
