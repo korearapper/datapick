@@ -6,7 +6,11 @@ const Database = require('better-sqlite3');
 const axios = require('axios');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const path = require('path');
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+
+// Stealth 플러그인 적용 (봇 감지 우회)
+puppeteer.use(StealthPlugin());
 
 const app = express();
 const PORT = process.env.PORT || 3000;
