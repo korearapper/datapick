@@ -283,20 +283,38 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       const searchUrl = 'https://map.naver.com/p/search/' + encodeURIComponent(keyword);
       console.log('페이지 이동: ' + searchUrl);
       
-      await page.goto(searchUrl, { waitUntil: 'networkidle0', timeout: 60000 });
-      await new Promise(r => setTimeout(r, 3000));
+      await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+      
+      // 페이지 로딩 대기 (충분히)
+      console.log('페이지 로딩 대기...');
+      await new Promise(r => setTimeout(r, 5000));
       
       // searchIframe 찾기
       console.log('검색 프레임 찾는 중...');
       let frame = null;
       
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 15; i++) {
         const iframeHandle = await page.$('iframe#searchIframe');
         if (iframeHandle) {
           frame = await iframeHandle.contentFrame();
-          if (frame) break;
+          if (frame) {
+            // iframe 내부 컨텐츠 로딩 대기
+            await new Promise(r => setTimeout(r, 3000));
+            
+            // place 링크가 있는지 확인
+            const hasContent = await frame.evaluate(() => {
+              return document.querySelectorAll('a[href*="place"]').length > 0 ||
+                     document.querySelectorAll('li').length > 10;
+            });
+            
+            if (hasContent) {
+              console.log('iframe 컨텐츠 로딩 완료');
+              break;
+            }
+          }
         }
-        await new Promise(r => setTimeout(r, 1000));
+        console.log('대기 중... ' + (i + 1) + '/15');
+        await new Promise(r => setTimeout(r, 2000));
       }
       
       if (!frame) {
@@ -305,6 +323,9 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       } else {
         console.log('검색 iframe 발견');
       }
+      
+      // 추가 대기 - 검색 결과 완전 로딩
+      await new Promise(r => setTimeout(r, 3000));
       
       // 스크롤하면서 데이터 수집
       let prevCount = 0;
