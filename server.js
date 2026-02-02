@@ -310,53 +310,75 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       let prevCount = 0;
       let noChangeCount = 0;
       
+      // 디버깅: iframe 내부 HTML 구조 확인
+      const debugHtml = await frame.evaluate(() => {
+        return {
+          bodyHtml: document.body.innerHTML.substring(0, 3000),
+          listItems: document.querySelectorAll('li').length,
+          divItems: document.querySelectorAll('div').length,
+          aLinks: document.querySelectorAll('a[href*="place"]').length,
+          classes: [...new Set([...document.querySelectorAll('*')].map(el => el.className).filter(c => c))].slice(0, 50)
+        };
+      });
+      
+      console.log('iframe 내부 li 개수: ' + debugHtml.listItems);
+      console.log('iframe 내부 div 개수: ' + debugHtml.divItems);
+      console.log('place 링크 개수: ' + debugHtml.aLinks);
+      console.log('발견된 클래스: ' + debugHtml.classes.join(', ').substring(0, 500));
+      console.log('HTML 샘플: ' + debugHtml.bodyHtml.substring(0, 1000));
+      
       while (allPlaceData.length < endRank && noChangeCount < 8) {
         const places = await frame.evaluate(() => {
           const results = [];
-          // 더 많은 셀렉터 시도
-          const items = document.querySelectorAll('li.VLTHu, li.UEzoS, li[class*="item"], div[class*="item"], a[href*="/place/"]');
+          
+          // 모든 a 태그에서 place 링크 찾기
+          const allLinks = document.querySelectorAll('a[href*="/place/"]');
+          console.log('찾은 place 링크: ' + allLinks.length);
           
           const processedIds = new Set();
           
-          items.forEach(item => {
-            let placeId = '';
-            let name = '';
-            let category = '';
-            let address = '';
+          allLinks.forEach(link => {
+            const href = link.getAttribute('href') || '';
+            const match = href.match(/place\/(\d+)/);
             
-            // href에서 place ID 추출
-            const allLinks = item.tagName === 'A' ? [item] : item.querySelectorAll('a[href*="/place/"]');
-            for (const link of allLinks) {
-              const href = link.getAttribute('href') || link.href || '';
-              const match = href.match(/place\/(\d+)/);
-              if (match && !processedIds.has(match[1])) {
-                placeId = match[1];
-                processedIds.add(placeId);
-                break;
+            if (match && !processedIds.has(match[1])) {
+              const placeId = match[1];
+              processedIds.add(placeId);
+              
+              // 부모 요소에서 정보 추출
+              let name = '';
+              let category = '';
+              let address = '';
+              
+              // 링크 텍스트 또는 부모에서 이름 찾기
+              const parent = link.closest('li') || link.closest('div') || link.parentElement;
+              
+              if (link.textContent.trim()) {
+                name = link.textContent.trim().split('\n')[0];
               }
-            }
-            
-            if (!placeId) {
-              placeId = item.getAttribute('data-sid') || item.getAttribute('data-id') || item.getAttribute('data-place-id') || '';
-            }
-            
-            // 이름 추출 (여러 셀렉터)
-            const nameEl = item.querySelector('.TYaxT, .place_bluelink, .YwYLL, .CHC5F a, .t3s7S, span[class*="name"], a[class*="name"]') || 
-                          (item.tagName === 'A' ? item : null);
-            if (nameEl) {
-              name = nameEl.textContent.trim().split('\n')[0];
-            }
-            
-            // 카테고리
-            const catEl = item.querySelector('.YwYLL, .KCMnt, .h69bs, span[class*="category"]');
-            if (catEl) category = catEl.textContent.trim();
-            
-            // 주소
-            const addrEl = item.querySelector('.n0slT, .place_addr, .LDgIH, span[class*="addr"]');
-            if (addrEl) address = addrEl.textContent.trim();
-            
-            if (placeId && name) {
-              results.push({ placeId: placeId, name: name, category: category, address: address });
+              
+              if (parent) {
+                // 이름이 없으면 부모에서 찾기
+                if (!name) {
+                  const nameEl = parent.querySelector('span, strong, b');
+                  if (nameEl) name = nameEl.textContent.trim();
+                }
+                
+                // 텍스트 노드에서 추출
+                const allText = parent.textContent.split('\n').map(t => t.trim()).filter(t => t);
+                if (allText.length > 0 && !name) name = allText[0];
+                if (allText.length > 1) category = allText[1];
+                if (allText.length > 2) address = allText.slice(2).join(' ');
+              }
+              
+              if (placeId) {
+                results.push({ 
+                  placeId: placeId, 
+                  name: name || ('업체 ' + placeId), 
+                  category: category, 
+                  address: address 
+                });
+              }
             }
           });
           
@@ -374,34 +396,21 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
         
         if (allPlaceData.length === prevCount) {
           noChangeCount++;
-          // 다른 스크롤 방법 시도
-          await frame.evaluate((attempt) => {
-            const scrollContainers = [
-              document.querySelector('#_pcmap_list_scroll_container'),
-              document.querySelector('.Ryr1F'),
-              document.querySelector('[class*="scroll"]'),
-              document.querySelector('[class*="list"]'),
-              document.body
-            ];
-            
-            for (const el of scrollContainers) {
-              if (el) {
-                el.scrollTop = el.scrollHeight;
-                el.scrollBy(0, 1000);
+          await frame.evaluate(() => {
+            // 모든 가능한 스크롤 컨테이너 시도
+            document.querySelectorAll('div').forEach(div => {
+              if (div.scrollHeight > div.clientHeight) {
+                div.scrollTop = div.scrollHeight;
               }
-            }
-            
-            // 페이지 끝까지 스크롤
+            });
             window.scrollTo(0, document.body.scrollHeight);
-          }, noChangeCount);
-          
+          });
           await new Promise(r => setTimeout(r, 2000));
         } else {
           noChangeCount = 0;
         }
         prevCount = allPlaceData.length;
         
-        // 일반 스크롤
         await frame.evaluate(() => {
           const el = document.querySelector('#_pcmap_list_scroll_container') ||
                     document.querySelector('.Ryr1F') ||
