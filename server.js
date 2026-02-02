@@ -259,120 +259,123 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
     // 1단계: 검색 결과에서 place ID 목록 추출
     const allPlaceIds = [];
     
-    // 첫 페이지: search.naver
-    const proxy1 = getNextProxy();
-    const proxyUrl1 = `http://${proxy1.auth.username}:${proxy1.auth.password}@${proxy1.host}:${proxy1.port}`;
-    const agent1 = new HttpsProxyAgent(proxyUrl1);
-    
-    const firstUrl = `https://m.map.naver.com/search2/search.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5`;
-    console.log(`첫 페이지 요청...`);
-    
-    try {
-      const firstResponse = await axios.get(firstUrl, {
-        httpsAgent: agent1,
-        timeout: 20000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-          'Accept': 'text/html,application/xhtml+xml',
-          'Accept-Language': 'ko-KR,ko;q=0.9',
-        }
-      });
-      
-      const html = firstResponse.data;
-      
-      // ID 추출
-      const extractIds = (text) => {
-        const ids = [];
-        const patterns = [
-          /sid[=:][\s"']*(\d{8,})/gi,
-          /place\/(\d{8,})/gi,
-          /"id"\s*:\s*"?(\d{8,})"?/gi,
-          /data-id="(\d{8,})"/gi,
-        ];
-        for (const pattern of patterns) {
-          let match;
-          pattern.lastIndex = 0;
-          while ((match = pattern.exec(text)) !== null) {
-            if (!ids.includes(match[1])) ids.push(match[1]);
-          }
-        }
-        return ids;
-      };
-      
-      const firstIds = extractIds(html);
-      for (const id of firstIds) {
-        if (!allPlaceIds.includes(id)) allPlaceIds.push(id);
-      }
-      console.log(`첫 페이지: ${firstIds.length}개 발견 (총 ${allPlaceIds.length}개)`);
-      
-    } catch (e) {
-      console.log(`첫 페이지 실패: ${e.message}`);
-    }
-    
-    // 추가 페이지: searchMore.naver (page=2,3,4...)
-    for (let page = 2; page <= 10 && allPlaceIds.length < endRank + 20; page++) {
+    // 방법: 네이버 지도 검색 API (페이지네이션)
+    for (let page = 1; page <= 10 && allPlaceIds.length < endRank + 20; page++) {
       const proxy = getNextProxy();
       const proxyUrl = `http://${proxy.auth.username}:${proxy.auth.password}@${proxy.host}:${proxy.port}`;
       const agent = new HttpsProxyAgent(proxyUrl);
       
-      const moreUrl = `https://m.map.naver.com/search2/searchMore.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5&page=${page}&displayCount=75`;
-      console.log(`추가 페이지 ${page} 요청...`);
+      const start = (page - 1) * 50 + 1;
+      const searchUrl = `https://map.naver.com/v5/api/search?caller=pcweb&query=${encodeURIComponent(keyword)}&type=all&page=${page}&displayCount=50&lang=ko`;
+      
+      console.log(`API 페이지 ${page} 요청 (start=${start})...`);
       
       try {
-        const moreResponse = await axios.get(moreUrl, {
+        const response = await axios.get(searchUrl, {
           httpsAgent: agent,
           timeout: 15000,
           headers: {
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1',
-            'Accept': '*/*',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
             'Accept-Language': 'ko-KR,ko;q=0.9',
-            'Referer': 'https://m.map.naver.com/search2/search.naver',
-            'X-Requested-With': 'XMLHttpRequest',
+            'Referer': 'https://map.naver.com/',
           }
         });
         
-        const moreData = moreResponse.data;
-        const beforeCount = allPlaceIds.length;
+        const data = response.data;
+        console.log(`응답 타입: ${typeof data}`);
         
-        // JSON 또는 HTML 응답 처리
-        if (typeof moreData === 'object') {
-          // JSON 응답
-          const list = moreData?.result?.site?.list || moreData?.result?.place?.list || moreData?.list || [];
-          for (const item of list) {
-            const id = String(item.id || item.sid || item.placeId);
-            if (id && !allPlaceIds.includes(id)) allPlaceIds.push(id);
-          }
-        } else if (typeof moreData === 'string') {
-          // HTML 응답
-          const ids = [];
-          const patterns = [/sid[=:][\s"']*(\d{8,})/gi, /place\/(\d{8,})/gi, /"id"\s*:\s*"?(\d{8,})"?/gi];
-          for (const pattern of patterns) {
-            let match;
-            pattern.lastIndex = 0;
-            while ((match = pattern.exec(moreData)) !== null) {
-              if (!ids.includes(match[1]) && !allPlaceIds.includes(match[1])) ids.push(match[1]);
+        let places = [];
+        
+        // 다양한 응답 구조 시도
+        if (data?.result?.place?.list) {
+          places = data.result.place.list;
+        } else if (data?.result?.site?.list) {
+          places = data.result.site.list;
+        } else if (data?.place?.list) {
+          places = data.place.list;
+        } else if (data?.list) {
+          places = data.list;
+        } else if (Array.isArray(data)) {
+          places = data;
+        }
+        
+        console.log(`페이지 ${page}: ${places.length}개 발견`);
+        
+        if (places.length === 0) {
+          // JSON에서 직접 ID 추출 시도
+          const jsonStr = JSON.stringify(data);
+          const idPattern = /"id"\s*:\s*"?(\d{8,})"?/g;
+          let match;
+          while ((match = idPattern.exec(jsonStr)) !== null) {
+            if (!allPlaceIds.includes(match[1])) {
+              allPlaceIds.push(match[1]);
             }
           }
-          allPlaceIds.push(...ids);
+          console.log(`JSON에서 직접 추출: ${allPlaceIds.length}개`);
+          if (allPlaceIds.length === 0) break;
+        } else {
+          for (const place of places) {
+            const id = place.id || place.sid || place.placeId;
+            if (id && !allPlaceIds.includes(String(id))) {
+              allPlaceIds.push(String(id));
+            }
+          }
         }
         
-        const added = allPlaceIds.length - beforeCount;
-        console.log(`페이지 ${page}: +${added}개 (총 ${allPlaceIds.length}개)`);
+        console.log(`총 ${allPlaceIds.length}개`);
         
-        if (added === 0) {
-          console.log(`더 이상 결과 없음, 종료`);
-          break;
-        }
+        if (places.length < 50 && allPlaceIds.length > 0) break;
         
       } catch (e) {
-        console.log(`페이지 ${page} 실패: ${e.message}`);
+        console.log(`API 페이지 ${page} 실패: ${e.message}`);
         break;
       }
       
-      await new Promise(r => setTimeout(r, 300));
+      await new Promise(r => setTimeout(r, 200));
+    }
+    
+    // API 실패시 HTML 파싱
+    if (allPlaceIds.length < endRank) {
+      console.log(`API 결과 부족 (${allPlaceIds.length}개), HTML 파싱...`);
+      
+      const proxy = getNextProxy();
+      const proxyUrl = `http://${proxy.auth.username}:${proxy.auth.password}@${proxy.host}:${proxy.port}`;
+      const agent = new HttpsProxyAgent(proxyUrl);
+      
+      const htmlUrl = `https://m.map.naver.com/search2/search.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5`;
+      
+      try {
+        const htmlResponse = await axios.get(htmlUrl, {
+          httpsAgent: agent,
+          timeout: 15000,
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
+          }
+        });
+        
+        const html = htmlResponse.data;
+        const patterns = [/place\/(\d{8,})/gi, /"id"\s*:\s*"?(\d{8,})"?/gi, /sid[=:][\s"']*(\d{8,})/gi];
+        
+        for (const pattern of patterns) {
+          let match;
+          pattern.lastIndex = 0;
+          while ((match = pattern.exec(html)) !== null) {
+            if (!allPlaceIds.includes(match[1])) allPlaceIds.push(match[1]);
+          }
+        }
+        
+        console.log(`HTML 파싱 후 총: ${allPlaceIds.length}개`);
+      } catch (e) {
+        console.log(`HTML 파싱 실패: ${e.message}`);
+      }
     }
     
     console.log(`총 Place ID: ${allPlaceIds.length}개`);
+    
+    if (allPlaceIds.length < startRank) {
+      return res.status(400).json({ error: `검색 결과가 ${allPlaceIds.length}개뿐입니다. 시작 순위(${startRank})보다 적습니다.` });
+    }
     
     // 2단계: 상세 정보 가져오기 (병렬 처리 - 5개씩)
     const targetIds = allPlaceIds.slice(startRank - 1, endRank);
