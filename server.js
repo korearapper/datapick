@@ -127,11 +127,14 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
     
     // 1단계: 모바일 페이지에서 Place ID 수집
     const proxy = getNextProxy();
-    const proxyUrl = 'http://' + proxy.auth.username + ':' + proxy.auth.password + '@' + proxy.host + ':' + proxy.port;
-    const agent = new HttpsProxyAgent(proxyUrl);
+    const agent = new HttpsProxyAgent({
+      host: proxy.host,
+      port: proxy.port,
+      auth: proxy.auth.username + ':' + proxy.auth.password
+    });
     
     const mobileUrl = 'https://m.map.naver.com/search2/search.naver?query=' + encodeURIComponent(keyword) + '&sm=hty&style=v5';
-    console.log('모바일 페이지 요청...');
+    console.log('모바일 페이지 요청... (프록시: ' + proxy.host + ':' + proxy.port + ')');
     
     const response = await axios.get(mobileUrl, {
       httpsAgent: agent,
@@ -187,8 +190,11 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
         
         try {
           const detailProxy = getNextProxy();
-          const detailProxyUrl = 'http://' + detailProxy.auth.username + ':' + detailProxy.auth.password + '@' + detailProxy.host + ':' + detailProxy.port;
-          const detailAgent = new HttpsProxyAgent(detailProxyUrl);
+          const detailAgent = new HttpsProxyAgent({
+            host: detailProxy.host,
+            port: detailProxy.port,
+            auth: detailProxy.auth.username + ':' + detailProxy.auth.password
+          });
           
           const detailUrl = 'https://m.place.naver.com/place/' + placeId + '/home';
           
