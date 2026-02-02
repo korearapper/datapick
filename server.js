@@ -310,10 +310,13 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
       let prevCount = 0;
       let noChangeCount = 0;
       
-      while (allPlaceData.length < endRank && noChangeCount < 5) {
+      while (allPlaceData.length < endRank && noChangeCount < 8) {
         const places = await frame.evaluate(() => {
           const results = [];
-          const items = document.querySelectorAll('li.VLTHu, li[data-laim-exp-id], li.UEzoS, div.CHC5F');
+          // 더 많은 셀렉터 시도
+          const items = document.querySelectorAll('li.VLTHu, li.UEzoS, li[class*="item"], div[class*="item"], a[href*="/place/"]');
+          
+          const processedIds = new Set();
           
           items.forEach(item => {
             let placeId = '';
@@ -321,29 +324,38 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
             let category = '';
             let address = '';
             
-            const links = item.querySelectorAll('a[href*="/place/"]');
-            for (const link of links) {
-              const match = link.href.match(/place\/(\d+)/);
-              if (match) {
+            // href에서 place ID 추출
+            const allLinks = item.tagName === 'A' ? [item] : item.querySelectorAll('a[href*="/place/"]');
+            for (const link of allLinks) {
+              const href = link.getAttribute('href') || link.href || '';
+              const match = href.match(/place\/(\d+)/);
+              if (match && !processedIds.has(match[1])) {
                 placeId = match[1];
+                processedIds.add(placeId);
                 break;
               }
             }
             
             if (!placeId) {
-              placeId = item.getAttribute('data-sid') || item.getAttribute('data-id') || '';
+              placeId = item.getAttribute('data-sid') || item.getAttribute('data-id') || item.getAttribute('data-place-id') || '';
             }
             
-            const nameEl = item.querySelector('.TYaxT, .place_bluelink, .CHC5F a, .O6P8Z');
-            if (nameEl) name = nameEl.textContent.trim();
+            // 이름 추출 (여러 셀렉터)
+            const nameEl = item.querySelector('.TYaxT, .place_bluelink, .YwYLL, .CHC5F a, .t3s7S, span[class*="name"], a[class*="name"]') || 
+                          (item.tagName === 'A' ? item : null);
+            if (nameEl) {
+              name = nameEl.textContent.trim().split('\n')[0];
+            }
             
-            const catEl = item.querySelector('.YwYLL, .KCMnt, .h69bs');
+            // 카테고리
+            const catEl = item.querySelector('.YwYLL, .KCMnt, .h69bs, span[class*="category"]');
             if (catEl) category = catEl.textContent.trim();
             
-            const addrEl = item.querySelector('.n0slT, .place_addr');
+            // 주소
+            const addrEl = item.querySelector('.n0slT, .place_addr, .LDgIH, span[class*="addr"]');
             if (addrEl) address = addrEl.textContent.trim();
             
-            if (placeId || name) {
+            if (placeId && name) {
               results.push({ placeId: placeId, name: name, category: category, address: address });
             }
           });
@@ -352,11 +364,8 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
         });
         
         for (const place of places) {
-          const exists = allPlaceData.some(p => 
-            (p.placeId && p.placeId === place.placeId) || 
-            (p.name && p.name === place.name)
-          );
-          if (!exists && (place.placeId || place.name)) {
+          const exists = allPlaceData.some(p => p.placeId === place.placeId);
+          if (!exists && place.placeId) {
             allPlaceData.push(place);
           }
         }
@@ -365,16 +374,41 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
         
         if (allPlaceData.length === prevCount) {
           noChangeCount++;
+          // 다른 스크롤 방법 시도
+          await frame.evaluate((attempt) => {
+            const scrollContainers = [
+              document.querySelector('#_pcmap_list_scroll_container'),
+              document.querySelector('.Ryr1F'),
+              document.querySelector('[class*="scroll"]'),
+              document.querySelector('[class*="list"]'),
+              document.body
+            ];
+            
+            for (const el of scrollContainers) {
+              if (el) {
+                el.scrollTop = el.scrollHeight;
+                el.scrollBy(0, 1000);
+              }
+            }
+            
+            // 페이지 끝까지 스크롤
+            window.scrollTo(0, document.body.scrollHeight);
+          }, noChangeCount);
+          
+          await new Promise(r => setTimeout(r, 2000));
         } else {
           noChangeCount = 0;
         }
         prevCount = allPlaceData.length;
         
+        // 일반 스크롤
         await frame.evaluate(() => {
           const el = document.querySelector('#_pcmap_list_scroll_container') ||
                     document.querySelector('.Ryr1F') ||
                     document.body;
-          el.scrollTop = el.scrollHeight;
+          if (el) {
+            el.scrollTop = el.scrollHeight;
+          }
         });
         
         await new Promise(r => setTimeout(r, 1500));
@@ -415,11 +449,48 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
               headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)' }
             });
             
-            const telMatch = response.data.match(/"phone"\s*:\s*"([^"]+)"/) ||
-                            response.data.match(/"tel"\s*:\s*"([^"]+)"/) ||
-                            response.data.match(/href="tel:([^"]+)"/);
-            if (telMatch) tel = telMatch[1];
-          } catch (e) {}
+            const html = response.data;
+            
+            // 여러 패턴으로 전화번호 추출
+            const telPatterns = [
+              /"phone"\s*:\s*"([^"]+)"/,
+              /"tel"\s*:\s*"([^"]+)"/,
+              /"virtualPhone"\s*:\s*"([^"]+)"/,
+              /"virtualTel"\s*:\s*"([^"]+)"/,
+              /href="tel:([^"]+)"/,
+              /"phoneNumber"\s*:\s*"([^"]+)"/,
+              /전화[^0-9]*([0-9]{2,4}-[0-9]{3,4}-[0-9]{4})/,
+              /([0-9]{2,4}-[0-9]{3,4}-[0-9]{4})/
+            ];
+            
+            for (const pattern of telPatterns) {
+              const match = html.match(pattern);
+              if (match && match[1] && match[1].includes('-')) {
+                tel = match[1];
+                break;
+              }
+            }
+            
+            // Apollo State에서도 추출 시도
+            if (!tel) {
+              const apolloMatch = html.match(/__APOLLO_STATE__\s*=\s*({.+?});?\s*<\/script>/s);
+              if (apolloMatch) {
+                try {
+                  const apolloData = JSON.parse(apolloMatch[1]);
+                  for (const key of Object.keys(apolloData)) {
+                    const obj = apolloData[key];
+                    if (obj && typeof obj === 'object') {
+                      if (obj.phone) { tel = obj.phone; break; }
+                      if (obj.virtualPhone) { tel = obj.virtualPhone; break; }
+                      if (obj.tel) { tel = obj.tel; break; }
+                    }
+                  }
+                } catch (e) {}
+              }
+            }
+          } catch (e) {
+            console.log('전화번호 조회 실패: ' + place.placeId);
+          }
         }
         
         return { rank: rank, name: place.name, tel: tel, address: place.address, category: place.category, placeId: place.placeId };
