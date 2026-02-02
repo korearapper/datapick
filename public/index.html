@@ -1,0 +1,1275 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DATAPICK - 대한민국 No.1 데이터 추출 플랫폼</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    :root {
+      --bg-primary: #000000;
+      --bg-secondary: #0a0a0a;
+      --bg-card: #111111;
+      --text-primary: #ffffff;
+      --text-secondary: rgba(255,255,255,0.6);
+      --text-tertiary: rgba(255,255,255,0.4);
+      --accent: #00ff88;
+      --accent-2: #00d4ff;
+      --border: rgba(255,255,255,0.08);
+      --glass: rgba(255,255,255,0.03);
+    }
+    
+    html { scroll-behavior: smooth; }
+    
+    body { 
+      font-family: 'Outfit', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    /* ===== NAVIGATION ===== */
+    .nav {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      z-index: 1000;
+      padding: 16px 0;
+      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .nav.scrolled {
+      background: rgba(0,0,0,0.8);
+      backdrop-filter: blur(20px) saturate(180%);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-inner {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 0 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-logo {
+      font-size: 1.5rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .nav-menu { display: flex; gap: 40px; }
+    .nav-menu a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: color 0.3s;
+    }
+    .nav-menu a:hover { color: var(--text-primary); }
+    .nav-actions { display: flex; gap: 12px; align-items: center; }
+    .nav-points {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--glass);
+      border: 1px solid var(--border);
+      padding: 10px 18px;
+      border-radius: 100px;
+      font-size: 0.875rem;
+      font-weight: 600;
+    }
+    .nav-points strong { color: var(--accent); }
+    .btn {
+      padding: 12px 24px;
+      border-radius: 100px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-secondary);
+    }
+    .btn-ghost:hover { color: var(--text-primary); }
+    .btn-primary {
+      background: var(--text-primary);
+      color: var(--bg-primary);
+    }
+    .btn-primary:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 40px rgba(0,255,136,0.3);
+    }
+    .btn-accent {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: var(--bg-primary);
+    }
+    .btn-accent:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 50px rgba(0,255,136,0.4);
+    }
+
+    /* ===== HERO ===== */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+      padding: 160px 48px 100px;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-bg {
+      position: absolute;
+      inset: 0;
+      background: 
+        radial-gradient(ellipse 80% 50% at 50% -20%, rgba(0,255,136,0.15), transparent),
+        radial-gradient(ellipse 60% 40% at 80% 60%, rgba(0,212,255,0.1), transparent),
+        radial-gradient(ellipse 50% 30% at 20% 80%, rgba(120,0,255,0.08), transparent);
+      pointer-events: none;
+    }
+    .hero-grid {
+      position: absolute;
+      inset: 0;
+      background-image: 
+        linear-gradient(var(--border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 80px 80px;
+      mask-image: radial-gradient(ellipse 70% 50% at 50% 50%, black, transparent);
+      pointer-events: none;
+    }
+    .hero-content { position: relative; z-index: 1; }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--glass);
+      border: 1px solid var(--border);
+      padding: 10px 20px;
+      border-radius: 100px;
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      margin-bottom: 40px;
+      animation: fadeInUp 1s ease-out;
+    }
+    .hero-badge-dot {
+      width: 8px; height: 8px;
+      background: var(--accent);
+      border-radius: 50%;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(0,255,136,0.5); }
+      50% { opacity: 0.8; box-shadow: 0 0 0 8px rgba(0,255,136,0); }
+    }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(30px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .hero h1 {
+      font-size: clamp(3.5rem, 10vw, 7rem);
+      font-weight: 800;
+      line-height: 1;
+      letter-spacing: -0.04em;
+      margin-bottom: 32px;
+      animation: fadeInUp 1s ease-out 0.1s both;
+    }
+    .hero h1 .gradient {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2), #a855f7);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .hero-desc {
+      font-size: clamp(1.125rem, 2vw, 1.375rem);
+      color: var(--text-secondary);
+      max-width: 600px;
+      margin: 0 auto 48px;
+      animation: fadeInUp 1s ease-out 0.2s both;
+    }
+    .hero-cta {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+      flex-wrap: wrap;
+      animation: fadeInUp 1s ease-out 0.3s both;
+    }
+    .hero-cta .btn { padding: 18px 40px; font-size: 1rem; }
+    .hero-stats {
+      display: flex;
+      gap: 80px;
+      margin-top: 100px;
+      padding-top: 60px;
+      border-top: 1px solid var(--border);
+      animation: fadeInUp 1s ease-out 0.4s both;
+    }
+    .hero-stat { text-align: center; }
+    .hero-stat-value {
+      font-size: 3rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, var(--text-primary), var(--text-secondary));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .hero-stat-label {
+      font-size: 0.875rem;
+      color: var(--text-tertiary);
+      margin-top: 8px;
+    }
+
+    /* ===== FEATURES ===== */
+    .features {
+      padding: 160px 48px;
+      position: relative;
+    }
+    .section-header {
+      text-align: center;
+      margin-bottom: 80px;
+    }
+    .section-tag {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 20px;
+    }
+    .section-title {
+      font-size: clamp(2.5rem, 5vw, 4rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .feature-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 48px 36px;
+      transition: all 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+      position: relative;
+      overflow: hidden;
+    }
+    .feature-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--accent), transparent);
+      opacity: 0;
+      transition: opacity 0.5s;
+    }
+    .feature-card:hover {
+      transform: translateY(-8px);
+      border-color: rgba(0,255,136,0.3);
+      box-shadow: 0 40px 80px rgba(0,0,0,0.4);
+    }
+    .feature-card:hover::before { opacity: 1; }
+    .feature-icon {
+      width: 64px; height: 64px;
+      background: linear-gradient(135deg, rgba(0,255,136,0.2), rgba(0,212,255,0.1));
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.75rem;
+      margin-bottom: 28px;
+    }
+    .feature-card h3 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 16px;
+      letter-spacing: -0.02em;
+    }
+    .feature-card p {
+      color: var(--text-secondary);
+      line-height: 1.7;
+    }
+
+    /* ===== IMPACT ===== */
+    .impact {
+      padding: 160px 48px;
+      background: linear-gradient(180deg, var(--bg-secondary), var(--bg-primary));
+      position: relative;
+      overflow: hidden;
+    }
+    .impact::before {
+      content: '';
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 800px; height: 800px;
+      background: radial-gradient(circle, rgba(0,255,136,0.05), transparent 70%);
+      pointer-events: none;
+    }
+    .impact-content {
+      max-width: 1000px;
+      margin: 0 auto;
+      text-align: center;
+      position: relative;
+      z-index: 1;
+    }
+    .impact h2 {
+      font-size: clamp(3rem, 7vw, 5rem);
+      font-weight: 800;
+      letter-spacing: -0.04em;
+      line-height: 1.1;
+      margin-bottom: 24px;
+    }
+    .impact h2 .highlight {
+      color: #ff6b35;
+    }
+    .impact-desc {
+      font-size: 1.25rem;
+      color: var(--text-secondary);
+      margin-bottom: 80px;
+    }
+    .impact-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 24px;
+    }
+    .impact-item {
+      background: var(--glass);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 40px 24px;
+      transition: all 0.4s;
+    }
+    .impact-item:hover {
+      background: rgba(255,255,255,0.05);
+      transform: translateY(-4px);
+    }
+    .impact-number {
+      font-size: 3.5rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, #ff6b35, #ff3366);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .impact-label {
+      font-size: 0.875rem;
+      color: var(--text-tertiary);
+      margin-top: 8px;
+    }
+
+    /* ===== AUTH MODAL ===== */
+    .auth-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      backdrop-filter: blur(16px);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 2000;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.4s;
+    }
+    .auth-overlay.active {
+      opacity: 1;
+      visibility: visible;
+    }
+    .auth-modal {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      padding: 48px;
+      width: 440px;
+      transform: scale(0.95) translateY(20px);
+      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .auth-overlay.active .auth-modal {
+      transform: scale(1) translateY(0);
+    }
+    .auth-header { text-align: center; margin-bottom: 36px; }
+    .auth-header h2 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+    }
+    .auth-header p { color: var(--text-secondary); }
+    .auth-tabs {
+      display: flex;
+      background: rgba(255,255,255,0.05);
+      border-radius: 14px;
+      padding: 4px;
+      margin-bottom: 32px;
+    }
+    .auth-tab {
+      flex: 1;
+      padding: 14px;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 0.9375rem;
+      font-weight: 600;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .auth-tab.active {
+      background: var(--text-primary);
+      color: var(--bg-primary);
+    }
+    .form-group { margin-bottom: 20px; }
+    .form-group label {
+      display: block;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 10px;
+    }
+    .form-group input {
+      width: 100%;
+      padding: 16px 20px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      color: var(--text-primary);
+      font-size: 1rem;
+      font-family: inherit;
+      transition: all 0.3s;
+    }
+    .form-group input:focus {
+      outline: none;
+      border-color: var(--accent);
+      background: rgba(0,255,136,0.05);
+    }
+    .form-group input::placeholder { color: var(--text-tertiary); }
+    .btn-auth {
+      width: 100%;
+      padding: 18px;
+      font-size: 1rem;
+      margin-top: 8px;
+    }
+    .auth-error {
+      background: rgba(255,59,48,0.1);
+      border: 1px solid rgba(255,59,48,0.3);
+      color: #ff6b6b;
+      padding: 14px 18px;
+      border-radius: 12px;
+      font-size: 0.875rem;
+      margin-bottom: 20px;
+    }
+
+    /* ===== DASHBOARD ===== */
+    .dashboard {
+      min-height: 100vh;
+      padding-top: 80px;
+    }
+    .dashboard-header {
+      padding: 48px;
+      border-bottom: 1px solid var(--border);
+    }
+    .dashboard-header-inner {
+      max-width: 1400px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .dashboard-welcome h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .dashboard-welcome p {
+      color: var(--text-secondary);
+      margin-top: 8px;
+    }
+    .dashboard-tabs { display: flex; gap: 8px; }
+    .dashboard-tab {
+      padding: 12px 24px;
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .dashboard-tab:hover { border-color: var(--text-tertiary); }
+    .dashboard-tab.active {
+      background: var(--text-primary);
+      color: var(--bg-primary);
+      border-color: var(--text-primary);
+    }
+    .dashboard-content {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 48px;
+    }
+
+    /* ===== EXTRACT CARD ===== */
+    .extract-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 48px;
+      margin-bottom: 24px;
+    }
+    .extract-header {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      margin-bottom: 40px;
+    }
+    .extract-icon {
+      width: 64px; height: 64px;
+      background: linear-gradient(135deg, #22c55e, #16a34a);
+      border-radius: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.75rem;
+    }
+    .extract-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .extract-desc { color: var(--text-secondary); margin-top: 4px; }
+    .extract-form {
+      display: grid;
+      grid-template-columns: 2fr 1fr 1fr auto;
+      gap: 16px;
+      align-items: end;
+    }
+    .extract-input label {
+      display: block;
+      font-size: 0.8125rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      margin-bottom: 10px;
+    }
+    .extract-input input {
+      width: 100%;
+      padding: 16px 20px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      color: var(--text-primary);
+      font-size: 1rem;
+      font-family: inherit;
+      transition: all 0.3s;
+    }
+    .extract-input input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .btn-extract {
+      padding: 16px 36px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: var(--bg-primary);
+      border: none;
+      border-radius: 14px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+      white-space: nowrap;
+    }
+    .btn-extract:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 32px rgba(0,255,136,0.3);
+    }
+    .extract-estimate {
+      margin-top: 20px;
+      font-size: 0.875rem;
+      color: var(--text-tertiary);
+    }
+    .extract-estimate strong { color: var(--accent); }
+
+    /* ===== RESULT ===== */
+    .result-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      overflow: hidden;
+    }
+    .result-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 28px 36px;
+      border-bottom: 1px solid var(--border);
+    }
+    .result-stats { display: flex; gap: 48px; }
+    .result-stat-value {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    .result-stat-label {
+      font-size: 0.75rem;
+      color: var(--text-tertiary);
+      margin-top: 4px;
+    }
+    .btn-download {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 28px;
+      background: #22c55e;
+      color: white;
+      border: none;
+      border-radius: 12px;
+      font-size: 0.9375rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s;
+    }
+    .btn-download:hover { background: #16a34a; }
+    .result-table { width: 100%; border-collapse: collapse; }
+    .result-table th,
+    .result-table td {
+      padding: 18px 28px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    .result-table th {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      background: rgba(255,255,255,0.02);
+    }
+    .result-table td { font-size: 0.9375rem; }
+    .result-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+    /* ===== LOADING ===== */
+    .loading-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.9);
+      backdrop-filter: blur(8px);
+      display: none;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+      z-index: 3000;
+    }
+    .loading-spinner {
+      width: 56px; height: 56px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .loading-text {
+      margin-top: 24px;
+      font-size: 1rem;
+      color: var(--text-secondary);
+    }
+
+    /* ===== ADMIN ===== */
+    .admin-card {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 24px 28px;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      margin-bottom: 12px;
+      transition: all 0.3s;
+    }
+    .admin-card:hover { background: rgba(255,255,255,0.04); }
+    .admin-user h4 { font-weight: 600; }
+    .admin-user p { color: var(--text-secondary); font-size: 0.875rem; margin-top: 4px; }
+    .admin-actions { display: flex; gap: 10px; align-items: center; }
+    .admin-input {
+      width: 100px;
+      padding: 12px 16px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text-primary);
+      font-size: 0.9375rem;
+      font-family: inherit;
+    }
+    .btn-admin {
+      padding: 12px 20px;
+      border: none;
+      border-radius: 10px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-admin-add { background: #22c55e; color: white; }
+    .btn-admin-remove { background: #ef4444; color: white; }
+
+    /* ===== UTILITIES ===== */
+    .hidden { display: none !important; }
+
+    /* ===== RESPONSIVE ===== */
+    @media (max-width: 1024px) {
+      .feature-grid { grid-template-columns: 1fr; }
+      .impact-grid { grid-template-columns: repeat(2, 1fr); }
+      .extract-form { grid-template-columns: 1fr; }
+      .hero-stats { flex-direction: column; gap: 40px; }
+    }
+    @media (max-width: 768px) {
+      .nav-menu { display: none; }
+      .dashboard-header-inner { flex-direction: column; gap: 24px; align-items: flex-start; }
+      .dashboard-tabs { flex-wrap: wrap; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- LANDING PAGE -->
+<div id="landingPage">
+  <nav class="nav" id="mainNav">
+    <div class="nav-inner">
+      <div class="nav-logo">DATAPICK</div>
+      <div class="nav-menu">
+        <a href="#features">기능</a>
+        <a href="#impact">임팩트</a>
+        <a href="#pricing">요금</a>
+      </div>
+      <div class="nav-actions">
+        <button class="btn btn-ghost" onclick="showAuth('login')">로그인</button>
+        <button class="btn btn-primary" onclick="showAuth('register')">시작하기</button>
+      </div>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <div class="hero-bg"></div>
+    <div class="hero-grid"></div>
+    <div class="hero-content">
+      <div class="hero-badge">
+        <span class="hero-badge-dot"></span>
+        실시간 데이터 추출 가능
+      </div>
+      <h1>데이터 수집의<br><span class="gradient">새로운 기준</span></h1>
+      <p class="hero-desc">네이버 플레이스, 스마트스토어, 쿠팡<br>모든 판매자 정보를 클릭 한 번으로.</p>
+      <div class="hero-cta">
+        <button class="btn btn-accent" onclick="showAuth('register')">무료로 시작하기</button>
+        <button class="btn btn-ghost">데모 보기 →</button>
+      </div>
+      <div class="hero-stats">
+        <div class="hero-stat">
+          <div class="hero-stat-value">1,200만+</div>
+          <div class="hero-stat-label">추출된 데이터</div>
+        </div>
+        <div class="hero-stat">
+          <div class="hero-stat-value">3,500+</div>
+          <div class="hero-stat-label">활성 사용자</div>
+        </div>
+        <div class="hero-stat">
+          <div class="hero-stat-value">99.9%</div>
+          <div class="hero-stat-label">성공률</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="features" id="features">
+    <div class="section-header">
+      <div class="section-tag">Features</div>
+      <h2 class="section-title">필요한 모든 데이터, 한 곳에서</h2>
+    </div>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon">🏪</div>
+        <h3>네이버 플레이스</h3>
+        <p>업체명, 전화번호, 주소, 카테고리까지<br>네이버 지도의 모든 매장 정보</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🛒</div>
+        <h3>스마트스토어</h3>
+        <p>판매자명, 연락처, 스토어 정보 등<br>네이버 쇼핑 셀러 데이터</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🚀</div>
+        <h3>쿠팡</h3>
+        <p>쿠팡 마켓플레이스 판매자 정보를<br>빠르게 추출하여 영업에 활용</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="impact" id="impact">
+    <div class="impact-content">
+      <h2>영업 리스트 수집에<br><span class="highlight">100시간</span> 쓰고 계신가요?</h2>
+      <p class="impact-desc">DATAPICK으로 단 10분 만에 완료하세요.<br>경쟁사보다 먼저 고객에게 다가가세요.</p>
+      <div class="impact-grid">
+        <div class="impact-item">
+          <div class="impact-number">10분</div>
+          <div class="impact-label">1,000건 추출</div>
+        </div>
+        <div class="impact-item">
+          <div class="impact-number">1원</div>
+          <div class="impact-label">건당 비용</div>
+        </div>
+        <div class="impact-item">
+          <div class="impact-number">24/7</div>
+          <div class="impact-label">무중단 서비스</div>
+        </div>
+        <div class="impact-item">
+          <div class="impact-number">100%</div>
+          <div class="impact-label">실시간 데이터</div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- AUTH MODAL -->
+<div id="authOverlay" class="auth-overlay">
+  <div class="auth-modal">
+    <div class="auth-header">
+      <h2>DATAPICK</h2>
+      <p>데이터 추출의 새로운 기준</p>
+    </div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" onclick="switchAuthTab('login')">로그인</button>
+      <button class="auth-tab" onclick="switchAuthTab('register')">회원가입</button>
+    </div>
+    <div id="authError" class="auth-error hidden"></div>
+    <div id="loginForm">
+      <div class="form-group">
+        <label>아이디</label>
+        <input type="text" id="loginUsername" placeholder="아이디를 입력하세요">
+      </div>
+      <div class="form-group">
+        <label>비밀번호</label>
+        <input type="password" id="loginPassword" placeholder="비밀번호를 입력하세요">
+      </div>
+      <button class="btn btn-accent btn-auth" onclick="login()">로그인</button>
+    </div>
+    <div id="registerForm" class="hidden">
+      <div class="form-group">
+        <label>아이디</label>
+        <input type="text" id="regUsername" placeholder="4자 이상">
+      </div>
+      <div class="form-group">
+        <label>비밀번호</label>
+        <input type="password" id="regPassword" placeholder="4자 이상">
+      </div>
+      <button class="btn btn-accent btn-auth" onclick="register()">회원가입</button>
+    </div>
+  </div>
+</div>
+
+<!-- DASHBOARD -->
+<div id="dashboardPage" class="dashboard hidden">
+  <nav class="nav scrolled">
+    <div class="nav-inner">
+      <div class="nav-logo">DATAPICK</div>
+      <div class="nav-menu">
+        <a href="#" onclick="showDashboardTab('place')">플레이스</a>
+        <a href="#" onclick="showDashboardTab('store')">스마트스토어</a>
+        <a href="#" onclick="showDashboardTab('coupang')">쿠팡</a>
+      </div>
+      <div class="nav-actions">
+        <div class="nav-points">💎 <strong id="userPoints">0</strong> P</div>
+        <button class="btn btn-ghost" onclick="logout()">로그아웃</button>
+      </div>
+    </div>
+  </nav>
+
+  <div class="dashboard-header">
+    <div class="dashboard-header-inner">
+      <div class="dashboard-welcome">
+        <h1>안녕하세요, <span id="displayUsername"></span>님</h1>
+        <p>오늘도 성공적인 영업 되세요!</p>
+      </div>
+      <div class="dashboard-tabs">
+        <button class="dashboard-tab active" onclick="showDashboardTab('place')">🏪 플레이스</button>
+        <button class="dashboard-tab" onclick="showDashboardTab('store')">🛒 스마트스토어</button>
+        <button class="dashboard-tab" onclick="showDashboardTab('coupang')">🚀 쿠팡</button>
+        <button class="dashboard-tab" onclick="showDashboardTab('history')">📋 내역</button>
+        <button id="adminTabBtn" class="dashboard-tab hidden" onclick="showDashboardTab('admin')">⚙️ 관리</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="dashboard-content">
+    <!-- Place Section -->
+    <div id="placeSection">
+      <div class="extract-card">
+        <div class="extract-header">
+          <div class="extract-icon">🏪</div>
+          <div>
+            <div class="extract-title">네이버 플레이스 추출</div>
+            <div class="extract-desc">키워드 검색 결과의 업체 정보를 추출합니다</div>
+          </div>
+        </div>
+        <div class="extract-form">
+          <div class="extract-input">
+            <label>검색 키워드</label>
+            <input type="text" id="placeKeyword" placeholder="예: 강남 맛집, 서울 미용실">
+          </div>
+          <div class="extract-input">
+            <label>시작 순위</label>
+            <input type="number" id="placeStartRank" value="1" min="1">
+          </div>
+          <div class="extract-input">
+            <label>종료 순위</label>
+            <input type="number" id="placeEndRank" value="100" min="1">
+          </div>
+          <button class="btn-extract" onclick="extractPlace()">추출 시작</button>
+        </div>
+        <div class="extract-estimate">예상 사용: <strong id="placeEstimate">100</strong> 포인트</div>
+      </div>
+
+      <div id="placeResult" class="result-card hidden">
+        <div class="result-header">
+          <div class="result-stats">
+            <div>
+              <div class="result-stat-value" id="placeCount">0</div>
+              <div class="result-stat-label">추출 완료</div>
+            </div>
+            <div>
+              <div class="result-stat-value" id="placeUsedPoints">0</div>
+              <div class="result-stat-label">사용 포인트</div>
+            </div>
+          </div>
+          <button class="btn-download" onclick="downloadExcel('place')">📥 엑셀 다운로드</button>
+        </div>
+        <table class="result-table" id="placeTable">
+          <thead>
+            <tr><th>순위</th><th>업체명</th><th>전화번호</th><th>주소</th><th>카테고리</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Store Section -->
+    <div id="storeSection" class="hidden">
+      <div class="extract-card">
+        <div class="extract-header">
+          <div class="extract-icon" style="background:linear-gradient(135deg,#3b82f6,#1d4ed8);">🛒</div>
+          <div>
+            <div class="extract-title">스마트스토어 추출</div>
+            <div class="extract-desc">곧 출시 예정입니다</div>
+          </div>
+        </div>
+        <div style="padding:80px;text-align:center;color:var(--text-tertiary);">🚧 서비스 준비 중</div>
+      </div>
+    </div>
+
+    <!-- Coupang Section -->
+    <div id="coupangSection" class="hidden">
+      <div class="extract-card">
+        <div class="extract-header">
+          <div class="extract-icon" style="background:linear-gradient(135deg,#f97316,#ea580c);">🚀</div>
+          <div>
+            <div class="extract-title">쿠팡 추출</div>
+            <div class="extract-desc">곧 출시 예정입니다</div>
+          </div>
+        </div>
+        <div style="padding:80px;text-align:center;color:var(--text-tertiary);">🚧 서비스 준비 중</div>
+      </div>
+    </div>
+
+    <!-- History Section -->
+    <div id="historySection" class="hidden">
+      <div class="extract-card">
+        <div class="extract-header">
+          <div class="extract-icon" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);">📋</div>
+          <div>
+            <div class="extract-title">포인트 사용 내역</div>
+            <div class="extract-desc">최근 50건의 내역</div>
+          </div>
+        </div>
+        <table class="result-table" id="historyTable">
+          <thead><tr><th>일시</th><th>구분</th><th>포인트</th><th>내용</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Admin Section -->
+    <div id="adminSection" class="hidden">
+      <div class="extract-card">
+        <div class="extract-header">
+          <div class="extract-icon" style="background:linear-gradient(135deg,#64748b,#475569);">⚙️</div>
+          <div>
+            <div class="extract-title">회원 관리</div>
+            <div class="extract-desc">포인트 지급 및 차감</div>
+          </div>
+        </div>
+        <div id="adminUserList"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- LOADING -->
+<div id="loadingOverlay" class="loading-overlay">
+  <div class="loading-spinner"></div>
+  <div class="loading-text">데이터를 추출하고 있습니다...</div>
+</div>
+
+<script>
+let currentUser = null;
+let extractedData = { place: [], store: [], coupang: [] };
+
+// Nav scroll effect
+window.addEventListener('scroll', () => {
+  document.getElementById('mainNav')?.classList.toggle('scrolled', window.scrollY > 50);
+});
+
+// Init
+async function init() {
+  try {
+    const res = await fetch('/api/me');
+    if (res.ok) {
+      currentUser = await res.json();
+      showDashboard();
+    }
+  } catch (e) {}
+  
+  document.getElementById('placeStartRank')?.addEventListener('input', updateEstimate);
+  document.getElementById('placeEndRank')?.addEventListener('input', updateEstimate);
+  document.getElementById('loginPassword')?.addEventListener('keypress', e => { if (e.key === 'Enter') login(); });
+}
+
+// Auth
+function showAuth(tab) {
+  document.getElementById('authOverlay').classList.add('active');
+  switchAuthTab(tab);
+}
+function hideAuth() {
+  document.getElementById('authOverlay').classList.remove('active');
+}
+document.getElementById('authOverlay').addEventListener('click', e => {
+  if (e.target.id === 'authOverlay') hideAuth();
+});
+
+function switchAuthTab(tab) {
+  document.querySelectorAll('.auth-tab').forEach((t, i) => {
+    t.classList.toggle('active', (tab === 'login' && i === 0) || (tab === 'register' && i === 1));
+  });
+  document.getElementById('loginForm').classList.toggle('hidden', tab !== 'login');
+  document.getElementById('registerForm').classList.toggle('hidden', tab !== 'register');
+  document.getElementById('authError').classList.add('hidden');
+}
+
+function showAuthError(msg) {
+  const el = document.getElementById('authError');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+async function login() {
+  const username = document.getElementById('loginUsername').value;
+  const password = document.getElementById('loginPassword').value;
+  try {
+    const res = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      currentUser = data.user;
+      hideAuth();
+      showDashboard();
+    } else {
+      showAuthError(data.error);
+    }
+  } catch (e) {
+    showAuthError('서버 오류가 발생했습니다.');
+  }
+}
+
+async function register() {
+  const username = document.getElementById('regUsername').value;
+  const password = document.getElementById('regPassword').value;
+  try {
+    const res = await fetch('/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      alert('회원가입이 완료되었습니다!');
+      switchAuthTab('login');
+    } else {
+      showAuthError(data.error);
+    }
+  } catch (e) {
+    showAuthError('서버 오류가 발생했습니다.');
+  }
+}
+
+async function logout() {
+  await fetch('/api/logout', { method: 'POST' });
+  currentUser = null;
+  document.getElementById('dashboardPage').classList.add('hidden');
+  document.getElementById('landingPage').classList.remove('hidden');
+}
+
+// Dashboard
+function showDashboard() {
+  document.getElementById('landingPage').classList.add('hidden');
+  document.getElementById('dashboardPage').classList.remove('hidden');
+  document.getElementById('displayUsername').textContent = currentUser.username;
+  document.getElementById('userPoints').textContent = currentUser.points.toLocaleString();
+  if (currentUser.isAdmin) document.getElementById('adminTabBtn').classList.remove('hidden');
+  updateEstimate();
+}
+
+function showDashboardTab(tab) {
+  document.querySelectorAll('.dashboard-tab').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  ['place', 'store', 'coupang', 'history', 'admin'].forEach(t => {
+    document.getElementById(t + 'Section')?.classList.add('hidden');
+  });
+  document.getElementById(tab + 'Section')?.classList.remove('hidden');
+  if (tab === 'history') loadHistory();
+  if (tab === 'admin') loadAdminUsers();
+}
+
+function updateEstimate() {
+  const start = parseInt(document.getElementById('placeStartRank')?.value) || 1;
+  const end = parseInt(document.getElementById('placeEndRank')?.value) || 1;
+  document.getElementById('placeEstimate').textContent = Math.max(0, end - start + 1).toLocaleString();
+}
+
+// Extract
+async function extractPlace() {
+  const keyword = document.getElementById('placeKeyword').value;
+  const startRank = parseInt(document.getElementById('placeStartRank').value);
+  const endRank = parseInt(document.getElementById('placeEndRank').value);
+  if (!keyword) return alert('키워드를 입력해주세요.');
+  if (startRank > endRank) return alert('순위 구간을 확인해주세요.');
+  
+  document.getElementById('loadingOverlay').style.display = 'flex';
+  document.getElementById('placeResult').classList.add('hidden');
+  
+  try {
+    const res = await fetch('/api/extract/place', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keyword, startRank, endRank })
+    });
+    const data = await res.json();
+    document.getElementById('loadingOverlay').style.display = 'none';
+    
+    if (res.ok) {
+      extractedData.place = data.data;
+      document.getElementById('userPoints').textContent = data.remainingPoints.toLocaleString();
+      currentUser.points = data.remainingPoints;
+      document.getElementById('placeCount').textContent = data.data.length.toLocaleString();
+      document.getElementById('placeUsedPoints').textContent = data.usedPoints.toLocaleString();
+      
+      document.querySelector('#placeTable tbody').innerHTML = data.data.map(item => `
+        <tr>
+          <td>${item.rank}</td>
+          <td>${item.name}</td>
+          <td>${item.tel || '-'}</td>
+          <td>${item.address || '-'}</td>
+          <td>${item.category || '-'}</td>
+        </tr>
+      `).join('');
+      
+      document.getElementById('placeResult').classList.remove('hidden');
+    } else {
+      alert(data.error);
+    }
+  } catch (e) {
+    document.getElementById('loadingOverlay').style.display = 'none';
+    alert('추출 중 오류가 발생했습니다.');
+  }
+}
+
+function downloadExcel(type) {
+  const data = extractedData[type];
+  if (!data.length) return alert('다운로드할 데이터가 없습니다.');
+  let csv = '\uFEFF순위,업체명,전화번호,주소,카테고리\n';
+  data.forEach(item => {
+    csv += `${item.rank},"${item.name}","${item.tel}","${item.address}","${item.category}"\n`;
+  });
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `DATAPICK_${type}_${new Date().toISOString().slice(0,10)}.csv`;
+  link.click();
+}
+
+async function loadHistory() {
+  const res = await fetch('/api/history/points');
+  const data = await res.json();
+  document.querySelector('#historyTable tbody').innerHTML = data.map(item => `
+    <tr>
+      <td>${new Date(item.created_at).toLocaleString('ko-KR')}</td>
+      <td>${item.type === 'charge' ? '🟢 충전' : item.type === 'use' ? '🔵 사용' : '🔴 차감'}</td>
+      <td style="color:${item.amount > 0 ? '#22c55e' : '#ef4444'}">${item.amount > 0 ? '+' : ''}${item.amount.toLocaleString()}P</td>
+      <td>${item.description}</td>
+    </tr>
+  `).join('');
+}
+
+async function loadAdminUsers() {
+  const res = await fetch('/api/admin/users');
+  const users = await res.json();
+  document.getElementById('adminUserList').innerHTML = users.map(user => `
+    <div class="admin-card">
+      <div class="admin-user">
+        <h4>${user.username} ${user.is_admin ? '👑' : ''}</h4>
+        <p>보유: ${user.points.toLocaleString()}P</p>
+      </div>
+      <div class="admin-actions">
+        <input type="number" class="admin-input" id="point_${user.id}" placeholder="포인트">
+        <button class="btn-admin btn-admin-add" onclick="givePoints(${user.id}, 1)">지급</button>
+        <button class="btn-admin btn-admin-remove" onclick="givePoints(${user.id}, -1)">차감</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function givePoints(userId, direction) {
+  const input = document.getElementById('point_' + userId);
+  const amount = parseInt(input.value) * direction;
+  if (!amount) return alert('포인트를 입력해주세요.');
+  
+  const res = await fetch('/api/admin/points', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId, amount })
+  });
+  
+  if (res.ok) {
+    alert('처리되었습니다!');
+    input.value = '';
+    loadAdminUsers();
+  } else {
+    const data = await res.json();
+    alert(data.error);
+  }
+}
+
+init();
+</script>
+</body>
+</html>
