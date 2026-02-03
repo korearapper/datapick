@@ -284,10 +284,24 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
         return false;
       };
 
+      // HTML 마크업 제거 헬퍼 (\u003Cmark\u003E이어폰\u003C/mark\u003E → 이어폰)
+      const cleanName = (s) => {
+        if (!s) return '';
+        return s
+          .replace(/\\u003C[^>]*\\u003E/gi, '')  // \u003Cmark\u003E 형태
+          .replace(/\\u003C\/[^>]*\\u003E/gi, '') 
+          .replace(/<[^>]*>/g, '')               // <mark> 형태
+          .replace(/\u003C[^>]*\u003E/g, '')     // 디코딩된 형태
+          .trim();
+      };
+
       const extractProduct = (it) => {
         if (!it || typeof it !== 'object') return null;
         const raw = it.item || it;
-        const name = raw.productTitle || raw.dispName || raw.name || raw.title || '';
+        // ★ productName 우선 (통합검색 쇼핑탭 실제 필드)
+        const rawName = raw.productName || raw.productNameOrg || raw.standardProductName ||
+                        raw.productTitle || raw.dispName || raw.name || raw.title || '';
+        const name = cleanName(rawName);
         if (!name || name.length < 2) return null;
         if (/^(파워링크|광고|AD|sponsored|프로모션|브랜드검색)/i.test(name)) return null;
         return {
@@ -309,7 +323,7 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
         if (Array.isArray(obj) && obj.length > 2) {
           const first = obj[0]?.item || obj[0];
           if (first && typeof first === 'object') {
-            const hasProductField = first.productTitle || first.dispName || 
+            const hasProductField = first.productName || first.productTitle || first.dispName || 
               (first.mallName && (first.price || first.lowPrice));
             if (hasProductField) {
               const filtered = obj.filter(item => {
@@ -396,10 +410,10 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
             }
           }
 
-          // 방법 B: productTitle/mallName 정규식 (광고 제외)
+          // 방법 B: productName/productTitle 정규식 (광고 제외)
           if (!success) {
-            // productTitle이 포함된 JSON 조각들 추출
-            const productChunks = [...html.matchAll(/\{[^{}]*"productTitle"\s*:\s*"[^"]{2,200}"[^{}]*\}/g)];
+            // productName이 포함된 JSON 조각들 추출 (통합검색 실제 필드)
+            const productChunks = [...html.matchAll(/\{[^{}]*"(?:productName|productTitle)"\s*:\s*"[^"]{2,200}"[^{}]*\}/g)];
             if (productChunks.length > 3) {
               for (const chunk of productChunks) {
                 try {
@@ -413,12 +427,12 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
                   if (p) products.push(p);
                 } catch (e) {
                   // JSON 조각 파싱 실패 → 정규식 폴백
-                  const nameMatch = chunk[0].match(/"productTitle"\s*:\s*"([^"]{2,200})"/);
+                  const nameMatch = chunk[0].match(/"(?:productName|productTitle)"\s*:\s*"([^"]{2,200})"/);
                   const mallMatch = chunk[0].match(/"mallName"\s*:\s*"([^"]{1,100})"/);
                   const priceMatch = chunk[0].match(/"(?:price|lowPrice|salePrice)"\s*:\s*"?(\d+)"?/);
                   const adMatch = chunk[0].match(/"adId"\s*:/);
                   if (nameMatch && !adMatch) {
-                    const pName = nameMatch[1];
+                    const pName = cleanName(nameMatch[1]);
                     if (!/^(파워링크|광고|AD|sponsored)/i.test(pName)) {
                       products.push({
                         productName: pName, storeName: mallMatch?.[1] || '',
@@ -459,23 +473,24 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
             }
           }
 
-          // 방법 D: 마지막 정규식 (productTitle 단독, 광고 ID 없는 것만)
+          // 방법 D: 마지막 정규식 (productName/productTitle 단독, 광고 ID 없는 것만)
           if (!success) {
-            const allTitles = [...html.matchAll(/"productTitle"\s*:\s*"([^"]{2,200})"/g)];
+            const allTitles = [...html.matchAll(/"(?:productName|productTitle)"\s*:\s*"([^"]{2,200})"/g)];
             if (allTitles.length > 0) {
               // 주변 컨텍스트에서 광고 여부 확인
               for (const match of allTitles) {
                 const idx = match.index;
                 const context = html.substring(Math.max(0, idx - 300), Math.min(html.length, idx + 500));
                 if (/"adId"\s*:/.test(context) || /"adcrUrl"\s*:/.test(context)) continue;
-                const pName = match[1];
+                const pName = cleanName(match[1]);
+                if (!pName || pName.length < 2) continue;
                 if (/^(파워링크|광고|AD|sponsored)/i.test(pName)) continue;
                 const mallM = context.match(/"mallName"\s*:\s*"([^"]{1,100})"/);
                 const priceM = context.match(/"(?:price|lowPrice|salePrice)"\s*:\s*"?(\d+)"?/);
                 const catM = context.match(/"category(?:1Name|Name)"\s*:\s*"([^"]{1,50})"/);
                 const brandM = context.match(/"brand"\s*:\s*"([^"]{1,50})"/);
                 products.push({
-                  productName: pName, storeName: mallM?.[1] || '',
+                  productName: cleanName(pName), storeName: mallM?.[1] || '',
                   price: priceM?.[1] || '', reviewCount: 0,
                   category: catM?.[1] || '', productUrl: '', productId: '',
                   image: '', maker: '', brand: brandM?.[1] || '',
@@ -552,21 +567,24 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
             const mHtml = mRes.data;
 
             // 모바일 통합검색 파싱 (광고 제외)
-            // 방법 1: productTitle 정규식 (주변 컨텍스트에서 광고 여부 확인)
-            const mChunks = [...mHtml.matchAll(/\{[^{}]*"productTitle"\s*:\s*"[^"]{2,200}"[^{}]*\}/g)];
+            // 방법 1: productName/productTitle 정규식 (주변 컨텍스트에서 광고 여부 확인)
+            const mChunks = [...mHtml.matchAll(/\{[^{}]*"(?:productName|productTitle)"\s*:\s*"[^"]{2,200}"[^{}]*\}/g)];
             if (mChunks.length > 0) {
               for (const chunk of mChunks) {
                 const ctx = chunk[0];
                 if (/"adId"\s*:/.test(ctx) || /"adcrUrl"\s*:/.test(ctx)) continue;
-                const nameM = ctx.match(/"productTitle"\s*:\s*"([^"]{2,200})"/);
+                const nameM = ctx.match(/"(?:productName|productTitle)"\s*:\s*"([^"]{2,200})"/);
                 const mallM = ctx.match(/"mallName"\s*:\s*"([^"]{1,100})"/);
                 const priceM = ctx.match(/"(?:price|lowPrice|salePrice)"\s*:\s*"?(\d+)"?/);
-                if (nameM && !/^(파워링크|광고|AD|sponsored)/i.test(nameM[1])) {
-                  products.push({
-                    productName: nameM[1], storeName: mallM?.[1] || '',
-                    price: priceM?.[1] || '', reviewCount: 0, category: '',
-                    productUrl: '', productId: '', image: '', maker: '', brand: '',
-                  });
+                if (nameM) {
+                  const pName = cleanName(nameM[1]);
+                  if (pName && pName.length >= 2 && !/^(파워링크|광고|AD|sponsored)/i.test(pName)) {
+                    products.push({
+                      productName: pName, storeName: mallM?.[1] || '',
+                      price: priceM?.[1] || '', reviewCount: 0, category: '',
+                      productUrl: '', productId: '', image: '', maker: '', brand: '',
+                    });
+                  }
                 }
               }
               if (products.length > 0) {
@@ -653,13 +671,15 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
             }
           });
           const msHtml = msRes.data;
-          const msTitles = [...msHtml.matchAll(/"productTitle"\s*:\s*"([^"]{2,200})"/g)];
+          const msTitles = [...msHtml.matchAll(/"(?:productName|productTitle)"\s*:\s*"([^"]{2,200})"/g)];
           const msMalls = [...msHtml.matchAll(/"mallName"\s*:\s*"([^"]{1,100})"/g)];
           const msPrices = [...msHtml.matchAll(/"(?:price|lowPrice)"\s*:\s*"?(\d+)"?/g)];
           if (msTitles.length > 0) {
             for (let j = 0; j < msTitles.length; j++) {
+              const pn = cleanName(msTitles[j]?.[1] || '');
+              if (!pn || pn.length < 2) continue;
               products.push({
-                productName: msTitles[j]?.[1] || '', storeName: msMalls[j]?.[1] || '',
+                productName: pn, storeName: msMalls[j]?.[1] || '',
                 price: msPrices[j]?.[1] || '', reviewCount: 0, category: '',
                 productUrl: '', productId: '', image: '', maker: '', brand: '',
               });
