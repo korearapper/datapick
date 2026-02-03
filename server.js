@@ -497,6 +497,31 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
             const hasShoppingSection = html.includes('shp_') || html.includes('_shopping_');
             const hasAdId = html.includes('adId');
             console.log(`    디버그: productTitle=${hasProductTitle} dispName=${hasDispName} mallName=${hasMallName} shopping=${hasShoppingSection} adId=${hasAdId}`);
+            
+            // 페이지 1, 시도 1일 때만 상세 디버그 (mallName 주변 컨텍스트)
+            if (page === 1 && attempt === 0) {
+              // mallName 주변 500바이트 샘플 (최대 3개)
+              const mallIdx = html.indexOf('"mallName"');
+              if (mallIdx > -1) {
+                const sample = html.substring(Math.max(0, mallIdx - 200), Math.min(html.length, mallIdx + 300));
+                console.log(`    [샘플] mallName 주변: ${sample.substring(0, 400)}`);
+              }
+              // "name" 또는 "title" 포함된 JSON 키 전체 스캔
+              const keyPatterns = [...html.matchAll(/"([a-zA-Z]*(?:name|title|Name|Title)[a-zA-Z]*)"\s*:\s*"([^"]{5,80})"/g)];
+              const uniqueKeys = new Map();
+              for (const m of keyPatterns) {
+                if (!uniqueKeys.has(m[1]) && uniqueKeys.size < 20) {
+                  uniqueKeys.set(m[1], m[2].substring(0, 50));
+                }
+              }
+              if (uniqueKeys.size > 0) {
+                console.log(`    [필드목록] ${[...uniqueKeys.entries()].map(([k,v]) => `${k}="${v}"`).join(' | ')}`);
+              }
+              // script 태그 내 JSON 크기 분석
+              const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
+              const bigScripts = scripts.filter(s => s[1].length > 10000).map(s => s[1].length);
+              console.log(`    [스크립트] 총 ${scripts.length}개, 10KB+: ${bigScripts.length}개 (크기: ${bigScripts.slice(0,5).join(', ')})`);
+            }
           }
         } catch (e) {
           console.log(`  [통합검색] 페이지 ${page} 시도${attempt + 1}: ${e.response?.status || e.message}`);
