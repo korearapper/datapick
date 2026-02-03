@@ -485,20 +485,50 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
                   }
                 }
                 
-                // 주변 2000바이트에서 카테고리/브랜드 찾기
-                const wideCtx = html.substring(Math.max(0, namePos - 500), Math.min(html.length, namePos + 2000));
+                // 주변 5000바이트에서 카테고리/브랜드/URL 찾기
+                const wideCtx = html.substring(Math.max(0, namePos - 500), Math.min(html.length, namePos + 5000));
                 const catM = wideCtx.match(/"category(?:1Name|Name)"\s*:\s*"([^"]{1,50})"/);
                 const brandM = wideCtx.match(/"brand"\s*:\s*"([^"]{1,80})"/);
                 const idM = wideCtx.match(/"nvMid"\s*:\s*"?(\d{5,20})"?/);
                 const imgM = wideCtx.match(/"imageUrl"\s*:\s*"([^"]{10,500})"/);
                 const reviewM = wideCtx.match(/"reviewCount"\s*:\s*"?(\d+)"?/);
+                // ★ pcUrl 우선 (통합검색 실제 필드명, \u002F 이스케이프)
+                const pcUrlM = wideCtx.match(/"pcUrl"\s*:\s*"([^"]{10,500})"/);
                 const urlM = wideCtx.match(/"mallProductUrl"\s*:\s*"([^"]{10,500})"/);
                 const crUrlM = wideCtx.match(/"crUrl"\s*:\s*"([^"]{10,500})"/);
                 const linkM = wideCtx.match(/"link"\s*:\s*"([^"]{10,500})"/);
-                // smartstore slug 직접 추출 (어떤 URL 필드에서든)
-                const storeSlugM = wideCtx.match(/smartstore\.naver\.com\/([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})(?:\/|")/);
-                const extractedUrl = urlM?.[1]?.replace(/\\u002F/g, '/') || crUrlM?.[1]?.replace(/\\u002F/g, '/') || linkM?.[1]?.replace(/\\u002F/g, '/') || '';
-                const extractedSlug = storeSlugM?.[1] || '';
+                // \u002F → / 디코딩
+                const dUrl = (u) => u ? u.replace(/\\u002F/g, '/').replace(/\\u003A/g, ':') : '';
+                const extractedUrl = dUrl(pcUrlM?.[1] || urlM?.[1] || crUrlM?.[1] || linkM?.[1] || '');
+                // slug 추출 (디코딩된 URL에서, 또는 outlink URL에서)
+                let extractedSlug = '';
+                if (extractedUrl) {
+                  // outlink URL 패턴: url=https%3A%2F%2Fsmartstore.naver.com%2F{slug}
+                  const outlinkM = extractedUrl.match(/url=https?%3A%2F%2F(?:m\.)?smartstore\.naver\.com%2F([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})/);
+                  if (outlinkM && outlinkM[1] !== 'main' && outlinkM[1] !== 'inflow') {
+                    extractedSlug = outlinkM[1];
+                  }
+                  if (!extractedSlug) {
+                    const directM = extractedUrl.match(/smartstore\.naver\.com\/([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})/);
+                    if (directM && directM[1] !== 'main' && directM[1] !== 'inflow') {
+                      extractedSlug = directM[1];
+                    }
+                  }
+                }
+                // 폴백: wideCtx 전체에서 outlink URL 패턴 스캔
+                if (!extractedSlug) {
+                  const decodedCtx = dUrl(wideCtx);
+                  const outlinkCtx = decodedCtx.match(/url=https?%3A%2F%2F(?:m\.)?smartstore\.naver\.com%2F([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})/);
+                  if (outlinkCtx && outlinkCtx[1] !== 'main' && outlinkCtx[1] !== 'inflow') {
+                    extractedSlug = outlinkCtx[1];
+                  }
+                  if (!extractedSlug) {
+                    const anySlug = decodedCtx.match(/smartstore\.naver\.com\/([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})(?:\/|"|$)/);
+                    if (anySlug && anySlug[1] !== 'main' && anySlug[1] !== 'inflow' && anySlug[1] !== 'products') {
+                      extractedSlug = anySlug[1];
+                    }
+                  }
+                }
                 
                 products.push({
                   productName: pName,
