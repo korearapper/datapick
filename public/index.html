@@ -171,7 +171,7 @@
     <div class="section-header"><div class="section-tag">Features</div><h2 class="section-title">필요한 모든 데이터, 한 곳에서</h2></div>
     <div class="feature-grid">
       <div class="feature-card"><div class="feature-icon">🏪</div><h3>네이버 플레이스</h3><p>업체명, 전화번호, 주소, 카테고리까지<br>최대 300위 매장 정보</p></div>
-      <div class="feature-card"><div class="feature-icon">🛒</div><h3>스마트스토어</h3><p>상품명, 스토어명, 가격, 카테고리<br>최대 500위 상품 데이터</p></div>
+      <div class="feature-card"><div class="feature-icon">🛒</div><h3>스마트스토어</h3><p>상품명, 스토어명, 전화번호, 대표자<br>최대 500위 판매자 정보</p></div>
       <div class="feature-card"><div class="feature-icon">🚀</div><h3>쿠팡</h3><p>쿠팡 마켓플레이스 판매자 정보<br>곧 출시 예정</p></div>
     </div>
   </section>
@@ -283,7 +283,7 @@
           <button class="btn-download" onclick="downloadExcel('store')">📥 엑셀 다운로드</button>
         </div>
         <div class="result-table-wrap">
-          <table class="result-table" id="storeTable"><thead><tr><th>순위</th><th>상품명</th><th>스토어</th><th>가격</th><th>카테고리</th><th>브랜드</th></tr></thead><tbody></tbody></table>
+          <table class="result-table" id="storeTable"><thead><tr><th>순위</th><th>상품명</th><th>스토어</th><th>전화번호</th><th>대표자</th></tr></thead><tbody></tbody></table>
         </div>
       </div>
     </div>
@@ -458,7 +458,7 @@ async function extractStore() {
       currentUser.points=data.remainingPoints;
       document.getElementById('storeCount').textContent=data.data.filter(r=>r.productName).length.toLocaleString();
       document.getElementById('storeUsedPoints').textContent=data.usedPoints.toLocaleString();
-      document.querySelector('#storeTable tbody').innerHTML=data.data.map(i=>`<tr><td>${i.rank}</td><td>${i.productName||'<span style="color:#555">-</span>'}</td><td>${i.storeName||'-'}</td><td>${i.price?Number(i.price).toLocaleString()+'원':'-'}</td><td>${i.category||'-'}</td><td>${i.brand||'-'}</td></tr>`).join('');
+      document.querySelector('#storeTable tbody').innerHTML=data.data.map(i=>`<tr><td>${i.rank}</td><td>${i.productName||'<span style="color:#555">-</span>'}</td><td>${i.storeName||'-'}</td><td>${i.sellerTel||'-'}</td><td>${i.sellerCeo||'-'}</td></tr>`).join('');
       document.getElementById('storeResult').classList.remove('hidden');
     } else alert(data.error);
   }catch(e){document.getElementById('loadingOverlay').style.display='none';document.getElementById('storeExtractBtn').disabled=false;alert('추출 중 오류');}
@@ -473,8 +473,8 @@ function downloadExcel(type) {
     csv='\uFEFF순위,업체명,전화번호,주소,카테고리\n';
     data.forEach(i=>{csv+=`${i.rank},"${(i.name||'').replace(/"/g,'""')}","${i.tel||''}","${(i.address||'').replace(/"/g,'""')}","${(i.category||'').replace(/"/g,'""')}"\n`;});
   } else if(type==='store'){
-    csv='\uFEFF순위,상품명,스토어명,가격,카테고리,브랜드,제조사\n';
-    data.forEach(i=>{csv+=`${i.rank},"${(i.productName||'').replace(/"/g,'""')}","${(i.storeName||'').replace(/"/g,'""')}","${i.price||''}","${(i.category||'').replace(/"/g,'""')}","${(i.brand||'').replace(/"/g,'""')}","${(i.maker||'').replace(/"/g,'""')}"\n`;});
+    csv='\uFEFF순위,상품명,스토어명,전화번호,대표자\n';
+    data.forEach(i=>{csv+=`${i.rank},"${(i.productName||'').replace(/"/g,'""')}","${(i.storeName||'').replace(/"/g,'""')}","${(i.sellerTel||'').replace(/"/g,'""')}","${(i.sellerCeo||'').replace(/"/g,'""')}"\n`;});
   }
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
   const link=document.createElement('a');
