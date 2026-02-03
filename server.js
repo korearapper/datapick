@@ -276,6 +276,60 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
       let products = [];
       let success = false;
 
+      // ── 공통 헬퍼 함수 (모든 단계에서 사용) ──
+      const isAd = (item) => {
+        if (!item || typeof item !== 'object') return false;
+        if (item.adId || item.adcrUrl || item.isAd === true) return true;
+        if (item.adType || item.adExtraInfo || item.adRank) return true;
+        return false;
+      };
+
+      const extractProduct = (it) => {
+        if (!it || typeof it !== 'object') return null;
+        const raw = it.item || it;
+        const name = raw.productTitle || raw.dispName || raw.name || raw.title || '';
+        if (!name || name.length < 2) return null;
+        if (/^(파워링크|광고|AD|sponsored|프로모션|브랜드검색)/i.test(name)) return null;
+        return {
+          productName: name,
+          storeName: raw.mallName || raw.dispMallName || raw.shopName || raw.seller || '',
+          price: raw.price || raw.lowPrice || raw.salePrice || raw.dispSalePrice || raw.dispDiscountedSalePrice || raw.dispPrice || '',
+          reviewCount: raw.reviewCount || raw.totalReviewCount || raw.reviewCnt || 0,
+          category: raw.category1Name || raw.categoryName || raw.dispCategoryName || raw.category || '',
+          productUrl: raw.mallProductUrl || raw.crUrl || raw.productUrl || raw.link || '',
+          productId: raw.id || raw.nvMid || raw.productId || raw.nid || '',
+          image: raw.imageUrl || raw.thumbnailUrl || raw.image || raw.imgUrl || '',
+          maker: raw.maker || raw.manufacturer || '',
+          brand: raw.brand || raw.brandName || '',
+        };
+      };
+
+      const findShopItems = (obj, depth = 0) => {
+        if (depth > 25 || !obj) return null;
+        if (Array.isArray(obj) && obj.length > 2) {
+          const first = obj[0]?.item || obj[0];
+          if (first && typeof first === 'object') {
+            const hasProductField = first.productTitle || first.dispName || 
+              (first.mallName && (first.price || first.lowPrice));
+            if (hasProductField) {
+              const filtered = obj.filter(item => {
+                const raw = item?.item || item;
+                return !isAd(raw) && !isAd(item);
+              });
+              if (filtered.length > 0) return filtered;
+            }
+          }
+        }
+        if (typeof obj === 'object' && !Array.isArray(obj)) {
+          for (const k of Object.keys(obj)) {
+            if (/^(ad|ads|adBanner|sponsored|powerlink)/i.test(k)) continue;
+            const f = findShopItems(obj[k], depth + 1);
+            if (f && f.length > 2) return f;
+          }
+        }
+        return null;
+      };
+
       // ══════════════════════════════════════════════════
       // 1차: 네이버 통합검색 쇼핑탭 (search.naver.com?where=shp)
       //   일반 검색이라 봇 감지가 search.shopping.naver.com보다 약함
@@ -307,115 +361,142 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
           const html = sRes.data;
           const htmlLen = typeof html === 'string' ? html.length : 0;
 
-          // 방법 A: entry.bootstrap JSON 데이터 추출 (2025+ 네이버 구조)
-          const bootstrapMatch = html.match(/entry\.bootstrap\s*\([^,]*,\s*(\{[\s\S]*?\})\s*\)\s*;?\s*<\/script>/);
-          if (bootstrapMatch) {
-            try {
-              const bData = JSON.parse(bootstrapMatch[1]);
-              const findShopItems = (obj, depth = 0) => {
-                if (depth > 20 || !obj) return null;
-                if (Array.isArray(obj) && obj.length > 3) {
-                  if (obj[0]?.productTitle || obj[0]?.item?.productTitle || obj[0]?.adId !== undefined) return obj;
-                }
-                if (typeof obj === 'object') {
-                  for (const k of Object.keys(obj)) {
-                    const f = findShopItems(obj[k], depth + 1);
-                    if (f) return f;
-                  }
-                }
-                return null;
-              };
-              const found = findShopItems(bData);
-              if (found?.length > 0) {
-                products = found.filter(p => (p.item?.productTitle || p.productTitle)).map(p => {
-                  const it = p.item || p;
-                  return {
-                    productName: it.productTitle || '', storeName: it.mallName || it.shopName || '',
-                    price: it.price || it.lowPrice || it.salePrice || '',
-                    reviewCount: it.reviewCount || it.totalReviewCount || 0,
-                    category: it.category1Name || it.categoryName || '',
-                    productUrl: it.mallProductUrl || it.crUrl || '',
-                    productId: it.id || it.nvMid || '',
-                    image: it.imageUrl || it.thumbnailUrl || '', maker: it.maker || '', brand: it.brand || '',
-                  };
-                });
-                if (products.length > 0) {
-                  success = true;
-                  console.log(`  [통합검색bootstrap] 페이지 ${page}: ${products.length}건 ✓`);
-                }
-              }
-            } catch (pe) {
-              console.log(`  [bootstrap파싱] 에러: ${pe.message}`);
-            }
-          }
+          // ── 통합검색 쇼핑탭 파싱 (광고 제외, 실제 상품만) ──
 
-          // 방법 B: __NEXT_DATA__ JSON 파싱
-          if (!success) {
-            const nextMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
-            if (nextMatch) {
+          // 방법 A: script 태그 내 JSON 블록들 전체 스캔
+          const scriptBlocks = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
+          for (const block of scriptBlocks) {
+            if (success) break;
+            const scriptContent = block[1];
+            if (!scriptContent || scriptContent.length < 500) continue;
+            
+            // JSON 객체 패턴 찾기 (다양한 임베딩 방식)
+            const jsonPatterns = [
+              /entry\.bootstrap\s*\([^,]*,\s*(\{[\s\S]*\})\s*\)\s*;?\s*$/,
+              /__NEXT_DATA__[^>]*>\s*(\{[\s\S]*\})\s*$/,
+              /window\.__.*?=\s*(\{[\s\S]*\})\s*;?\s*$/,
+              /data\s*=\s*(\{[\s\S]*\})\s*;?\s*$/,
+            ];
+            
+            for (const pat of jsonPatterns) {
+              if (success) break;
+              const m = scriptContent.match(pat);
+              if (!m) continue;
               try {
-                const nd = JSON.parse(nextMatch[1]);
-                const findProducts = (obj, depth = 0) => {
-                  if (depth > 15 || !obj) return null;
-                  if (Array.isArray(obj) && obj.length > 0 && (obj[0]?.item?.productTitle || obj[0]?.productTitle)) return obj;
-                  if (typeof obj === 'object') {
-                    for (const k of Object.keys(obj)) { const f = findProducts(obj[k], depth + 1); if (f) return f; }
+                const jsonData = JSON.parse(m[1]);
+                const items = findShopItems(jsonData);
+                if (items && items.length > 0) {
+                  products = items.map(extractProduct).filter(Boolean);
+                  if (products.length > 0) {
+                    success = true;
+                    console.log(`  [통합검색JSON] 페이지 ${page}: ${products.length}건 ✓`);
                   }
-                  return null;
-                };
-                const found = findProducts(nd);
-                if (found?.length > 0) {
-                  products = found.map(p => { const it = p.item || p; return {
-                    productName: it.productTitle || '', storeName: it.mallName || '',
-                    price: it.price || it.lowPrice || '', reviewCount: it.reviewCount || 0,
-                    category: it.category1Name || '', productUrl: it.mallProductUrl || '',
-                    productId: it.id || '', image: it.imageUrl || '', maker: it.maker || '', brand: it.brand || '',
-                  }; });
-                  success = true;
-                  console.log(`  [통합검색NEXT] 페이지 ${page}: ${products.length}건 ✓`);
                 }
-              } catch (pe) {}
+              } catch (e) { /* JSON 파싱 실패 - 다음 패턴 시도 */ }
             }
           }
 
-          // 방법 C: HTML 정규식 폴백 (productTitle/mallName/price 패턴)
+          // 방법 B: productTitle/mallName 정규식 (광고 제외)
           if (!success) {
-            const titles = [...html.matchAll(/"productTitle"\s*:\s*"([^"]{2,200})"/g)];
-            const malls = [...html.matchAll(/"mallName"\s*:\s*"([^"]{1,100})"/g)];
-            const prices = [...html.matchAll(/"(?:price|lowPrice|salePrice)"\s*:\s*"?(\d+)"?/g)];
-            if (titles.length > 3) {
-              for (let j = 0; j < titles.length; j++) {
-                products.push({
-                  productName: titles[j]?.[1] || '', storeName: malls[j]?.[1] || '',
-                  price: prices[j]?.[1] || '', reviewCount: 0, category: '',
-                  productUrl: '', productId: '', image: '', maker: '', brand: '',
-                });
+            // productTitle이 포함된 JSON 조각들 추출
+            const productChunks = [...html.matchAll(/\{[^{}]*"productTitle"\s*:\s*"[^"]{2,200}"[^{}]*\}/g)];
+            if (productChunks.length > 3) {
+              for (const chunk of productChunks) {
+                try {
+                  // JSON 조각 복원 시도
+                  let jsonStr = chunk[0];
+                  // 불완전한 JSON 수정
+                  if (!jsonStr.endsWith('}')) jsonStr += '}';
+                  const obj = JSON.parse(jsonStr);
+                  if (isAd(obj)) continue;
+                  const p = extractProduct(obj);
+                  if (p) products.push(p);
+                } catch (e) {
+                  // JSON 조각 파싱 실패 → 정규식 폴백
+                  const nameMatch = chunk[0].match(/"productTitle"\s*:\s*"([^"]{2,200})"/);
+                  const mallMatch = chunk[0].match(/"mallName"\s*:\s*"([^"]{1,100})"/);
+                  const priceMatch = chunk[0].match(/"(?:price|lowPrice|salePrice)"\s*:\s*"?(\d+)"?/);
+                  const adMatch = chunk[0].match(/"adId"\s*:/);
+                  if (nameMatch && !adMatch) {
+                    const pName = nameMatch[1];
+                    if (!/^(파워링크|광고|AD|sponsored)/i.test(pName)) {
+                      products.push({
+                        productName: pName, storeName: mallMatch?.[1] || '',
+                        price: priceMatch?.[1] || '', reviewCount: 0, category: '',
+                        productUrl: '', productId: '', image: '', maker: '', brand: '',
+                      });
+                    }
+                  }
+                }
               }
-              success = true;
-              console.log(`  [통합검색정규식] 페이지 ${page}: ${products.length}건 ✓`);
+              if (products.length > 0) {
+                success = true;
+                console.log(`  [통합검색정규식A] 페이지 ${page}: ${products.length}건 ✓`);
+              }
             }
           }
 
-          // 방법 D: 쇼핑 영역 일반 HTML 파싱 (li.basicList_item 등)
-          if (!success && htmlLen > 5000) {
-            // 상품 제목 후보 패턴들
-            const altTitles = [...html.matchAll(/class="[^"]*(?:tit|title|name)[^"]*"[^>]*>([^<]{3,150})</g)];
-            const altPrices = [...html.matchAll(/class="[^"]*(?:price|num)[^"]*"[^>]*>([0-9,]+)/g)];
-            if (altTitles.length > 5) {
-              for (let j = 0; j < altTitles.length; j++) {
+          // 방법 C: dispName 패턴 (통합검색 전용 필드)
+          if (!success) {
+            const dispNames = [...html.matchAll(/"dispName"\s*:\s*"([^"]{2,200})"/g)];
+            const dispMalls = [...html.matchAll(/"(?:dispMallName|mallName)"\s*:\s*"([^"]{1,100})"/g)];
+            const dispPrices = [...html.matchAll(/"(?:dispSalePrice|dispDiscountedSalePrice|dispPrice|price|lowPrice)"\s*:\s*"?(\d+)"?/g)];
+            if (dispNames.length > 3) {
+              for (let j = 0; j < dispNames.length; j++) {
+                const pName = dispNames[j]?.[1];
+                if (pName && !/^(파워링크|광고|AD|sponsored)/i.test(pName)) {
+                  products.push({
+                    productName: pName, storeName: dispMalls[j]?.[1] || '',
+                    price: dispPrices[j]?.[1] || '', reviewCount: 0, category: '',
+                    productUrl: '', productId: '', image: '', maker: '', brand: '',
+                  });
+                }
+              }
+              if (products.length > 0) {
+                success = true;
+                console.log(`  [통합검색dispName] 페이지 ${page}: ${products.length}건 ✓`);
+              }
+            }
+          }
+
+          // 방법 D: 마지막 정규식 (productTitle 단독, 광고 ID 없는 것만)
+          if (!success) {
+            const allTitles = [...html.matchAll(/"productTitle"\s*:\s*"([^"]{2,200})"/g)];
+            if (allTitles.length > 0) {
+              // 주변 컨텍스트에서 광고 여부 확인
+              for (const match of allTitles) {
+                const idx = match.index;
+                const context = html.substring(Math.max(0, idx - 300), Math.min(html.length, idx + 500));
+                if (/"adId"\s*:/.test(context) || /"adcrUrl"\s*:/.test(context)) continue;
+                const pName = match[1];
+                if (/^(파워링크|광고|AD|sponsored)/i.test(pName)) continue;
+                const mallM = context.match(/"mallName"\s*:\s*"([^"]{1,100})"/);
+                const priceM = context.match(/"(?:price|lowPrice|salePrice)"\s*:\s*"?(\d+)"?/);
+                const catM = context.match(/"category(?:1Name|Name)"\s*:\s*"([^"]{1,50})"/);
+                const brandM = context.match(/"brand"\s*:\s*"([^"]{1,50})"/);
                 products.push({
-                  productName: altTitles[j]?.[1]?.trim() || '', storeName: '',
-                  price: altPrices[j]?.[1]?.replace(/,/g, '') || '', reviewCount: 0,
-                  category: '', productUrl: '', productId: '', image: '', maker: '', brand: '',
+                  productName: pName, storeName: mallM?.[1] || '',
+                  price: priceM?.[1] || '', reviewCount: 0,
+                  category: catM?.[1] || '', productUrl: '', productId: '',
+                  image: '', maker: '', brand: brandM?.[1] || '',
                 });
               }
-              success = true;
-              console.log(`  [통합검색HTML] 페이지 ${page}: ${products.length}건 ✓`);
+              if (products.length > 0) {
+                success = true;
+                console.log(`  [통합검색정규식B] 페이지 ${page}: ${products.length}건 ✓`);
+              }
             }
           }
 
           if (!success) {
             console.log(`  [통합검색] 페이지 ${page} 시도${attempt + 1}: 200 but no data (html: ${htmlLen}bytes)`);
+            // 디버그: HTML에 어떤 키워드가 있는지 확인
+            const hasProductTitle = html.includes('productTitle');
+            const hasDispName = html.includes('dispName');
+            const hasMallName = html.includes('mallName');
+            const hasShoppingSection = html.includes('shp_') || html.includes('_shopping_');
+            const hasAdId = html.includes('adId');
+            console.log(`    디버그: productTitle=${hasProductTitle} dispName=${hasDispName} mallName=${hasMallName} shopping=${hasShoppingSection} adId=${hasAdId}`);
           }
         } catch (e) {
           console.log(`  [통합검색] 페이지 ${page} 시도${attempt + 1}: ${e.response?.status || e.message}`);
@@ -445,50 +526,84 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
             });
             const mHtml = mRes.data;
 
-            // productTitle 정규식
-            const mTitles = [...mHtml.matchAll(/"productTitle"\s*:\s*"([^"]{2,200})"/g)];
-            const mMalls = [...mHtml.matchAll(/"mallName"\s*:\s*"([^"]{1,100})"/g)];
-            const mPrices = [...mHtml.matchAll(/"(?:price|lowPrice)"\s*:\s*"?(\d+)"?/g)];
-            if (mTitles.length > 0) {
-              for (let j = 0; j < mTitles.length; j++) {
-                products.push({
-                  productName: mTitles[j]?.[1] || '', storeName: mMalls[j]?.[1] || '',
-                  price: mPrices[j]?.[1] || '', reviewCount: 0, category: '',
-                  productUrl: '', productId: '', image: '', maker: '', brand: '',
-                });
+            // 모바일 통합검색 파싱 (광고 제외)
+            // 방법 1: productTitle 정규식 (주변 컨텍스트에서 광고 여부 확인)
+            const mChunks = [...mHtml.matchAll(/\{[^{}]*"productTitle"\s*:\s*"[^"]{2,200}"[^{}]*\}/g)];
+            if (mChunks.length > 0) {
+              for (const chunk of mChunks) {
+                const ctx = chunk[0];
+                if (/"adId"\s*:/.test(ctx) || /"adcrUrl"\s*:/.test(ctx)) continue;
+                const nameM = ctx.match(/"productTitle"\s*:\s*"([^"]{2,200})"/);
+                const mallM = ctx.match(/"mallName"\s*:\s*"([^"]{1,100})"/);
+                const priceM = ctx.match(/"(?:price|lowPrice|salePrice)"\s*:\s*"?(\d+)"?/);
+                if (nameM && !/^(파워링크|광고|AD|sponsored)/i.test(nameM[1])) {
+                  products.push({
+                    productName: nameM[1], storeName: mallM?.[1] || '',
+                    price: priceM?.[1] || '', reviewCount: 0, category: '',
+                    productUrl: '', productId: '', image: '', maker: '', brand: '',
+                  });
+                }
               }
-              success = true;
-              console.log(`  [모바일통합] 페이지 ${page}: ${products.length}건 ✓`);
-            } else {
-              // bootstrap 데이터 시도
-              const bMatch = mHtml.match(/entry\.bootstrap\s*\([^,]*,\s*(\{[\s\S]*?\})\s*\)\s*;?\s*<\/script>/);
-              if (bMatch) {
-                try {
-                  const bd = JSON.parse(bMatch[1]);
-                  const findItems = (o, d = 0) => {
-                    if (d > 20 || !o) return null;
-                    if (Array.isArray(o) && o.length > 3 && (o[0]?.productTitle || o[0]?.item?.productTitle)) return o;
-                    if (typeof o === 'object') { for (const k of Object.keys(o)) { const f = findItems(o[k], d + 1); if (f) return f; } }
-                    return null;
-                  };
-                  const mf = findItems(bd);
-                  if (mf?.length > 0) {
-                    products = mf.filter(p => (p.item?.productTitle || p.productTitle)).map(p => {
-                      const it = p.item || p;
-                      return {
-                        productName: it.productTitle || '', storeName: it.mallName || '',
-                        price: it.price || it.lowPrice || '', reviewCount: it.reviewCount || 0,
-                        category: '', productUrl: '', productId: it.id || '',
-                        image: '', maker: '', brand: '',
-                      };
-                    });
-                    success = true;
-                    console.log(`  [모바일bootstrap] 페이지 ${page}: ${products.length}건 ✓`);
-                  }
-                } catch (e) {}
+              if (products.length > 0) {
+                success = true;
+                console.log(`  [모바일통합] 페이지 ${page}: ${products.length}건 ✓`);
               }
-              if (!success) console.log(`  [모바일통합] 페이지 ${page} 시도${attempt + 1}: no data (${mHtml.length}bytes)`);
             }
+
+            // 방법 2: dispName 패턴
+            if (!success) {
+              const mDispNames = [...mHtml.matchAll(/"dispName"\s*:\s*"([^"]{2,200})"/g)];
+              if (mDispNames.length > 0) {
+                const mDispMalls = [...mHtml.matchAll(/"(?:dispMallName|mallName)"\s*:\s*"([^"]{1,100})"/g)];
+                const mDispPrices = [...mHtml.matchAll(/"(?:dispSalePrice|price|lowPrice)"\s*:\s*"?(\d+)"?/g)];
+                for (let j = 0; j < mDispNames.length; j++) {
+                  const pName = mDispNames[j]?.[1];
+                  if (pName && !/^(파워링크|광고|AD|sponsored)/i.test(pName)) {
+                    products.push({
+                      productName: pName, storeName: mDispMalls[j]?.[1] || '',
+                      price: mDispPrices[j]?.[1] || '', reviewCount: 0, category: '',
+                      productUrl: '', productId: '', image: '', maker: '', brand: '',
+                    });
+                  }
+                }
+                if (products.length > 0) {
+                  success = true;
+                  console.log(`  [모바일dispName] 페이지 ${page}: ${products.length}건 ✓`);
+                }
+              }
+            }
+
+            // 방법 3: bootstrap JSON 재귀 탐색 (광고 필터링)
+            if (!success) {
+              const scriptBlks = [...mHtml.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
+              for (const blk of scriptBlks) {
+                if (success) break;
+                const sc = blk[1];
+                if (!sc || sc.length < 500) continue;
+                const jsonPats = [
+                  /entry\.bootstrap\s*\([^,]*,\s*(\{[\s\S]*\})\s*\)\s*;?\s*$/,
+                  /window\.__.*?=\s*(\{[\s\S]*\})\s*;?\s*$/,
+                ];
+                for (const p of jsonPats) {
+                  const mm = sc.match(p);
+                  if (!mm) continue;
+                  try {
+                    const jd = JSON.parse(mm[1]);
+                    const items = findShopItems(jd);
+                    if (items && items.length > 0) {
+                      products = items.map(extractProduct).filter(Boolean);
+                      if (products.length > 0) {
+                        success = true;
+                        console.log(`  [모바일JSON] 페이지 ${page}: ${products.length}건 ✓`);
+                        break;
+                      }
+                    }
+                  } catch (e) {}
+                }
+              }
+            }
+
+            if (!success) console.log(`  [모바일통합] 페이지 ${page} 시도${attempt + 1}: no data (${mHtml.length}bytes)`);
           } catch (e) {
             console.log(`  [모바일통합] 페이지 ${page} 시도${attempt + 1}: ${e.response?.status || e.message}`);
             await sleep(2000 + attempt * 2000);
