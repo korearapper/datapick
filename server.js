@@ -443,6 +443,26 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
               } else {
                 console.log(`    [URL필드] 첫 상품 주변에 URL 키 없음`);
               }
+              
+              // ★ 판매자 관련 키 전체 덤프 (검색 결과에 숨어있는 필드 찾기)
+              const bigCtx = html.substring(Math.max(0, samplePos - 500), Math.min(html.length, samplePos + 8000));
+              const sellerKeys = [...bigCtx.matchAll(/"([a-zA-Z]*(?:seller|channel|merchant|vendor|shop|store|tel|phone|ceo|representative|npc|mallNo|mallId|vendorId|channelNo|channelUid|sellerNo)[a-zA-Z]*)"\s*:\s*"?([^",}\]]{1,150})"?/gi)];
+              if (sellerKeys.length > 0) {
+                console.log(`    [판매자필드] 첫 상품 주변 판매자 관련 키들 (${sellerKeys.length}개):`);
+                const seen = new Set();
+                sellerKeys.slice(0, 25).forEach(sk => {
+                  if (!seen.has(sk[1])) { seen.add(sk[1]); console.log(`      ${sk[1]}=${sk[2].substring(0, 80)}`); }
+                });
+              } else {
+                console.log(`    [판매자필드] 판매자 관련 키 없음`);
+              }
+              
+              // ★ 전체 HTML에서 모든 고유 JSON 키 중 seller/channel/tel/phone 패턴
+              const globalKeys = [...html.matchAll(/"([a-zA-Z]{2,40})"\s*:/g)].map(m => m[1]);
+              const uniqueKeys = [...new Set(globalKeys)].filter(k => /seller|channel|merchant|tel|phone|ceo|representative|vendor|npc|mall.*id|mall.*no/i.test(k));
+              if (uniqueKeys.length > 0) {
+                console.log(`    [글로벌키] HTML 전체에서 판매자 관련 키: ${uniqueKeys.join(', ')}`);
+              }
             }
             
             if (allNames.length > 0) {
@@ -773,9 +793,13 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
     // 각 상품의 스토어 페이지에서 판매자 정보 추출
     // ══════════════════════════════════════════════════
     console.log(`\n[2단계] 판매자 정보 크롤링 시작 (${allProducts.length}건)`);
+    console.log(`  ※ 검색 HTML 분석 모드 - 위의 [판매자필드] [글로벌키] 로그를 확인하세요`);
     
     // 스토어별로 중복 제거 (같은 스토어는 한 번만 조회)
     const storeInfoCache = {};
+    
+    // ★ 검색 HTML에서 이미 추출한 slug로 seller-info API를 search.naver.com 경유로 시도
+    // (search.naver.com은 차단이 약하므로, 스토어 slug를 검색어로 넣어 사업자정보 찾기)
     
     const fetchSellerInfo = async (product, idx) => {
       const { storeName, productUrl, productId, storeSlug: preSlug } = product;
