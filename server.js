@@ -720,7 +720,7 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
     // 스토어별로 중복 제거 (같은 스토어는 한 번만 조회)
     const storeInfoCache = {};
     
-    const fetchSellerInfo = async (product) => {
+    const fetchSellerInfo = async (product, idx) => {
       const { storeName, productUrl, productId } = product;
       
       // 캐시 확인
@@ -738,23 +738,45 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
           if (slugM) storeSlug = slugM[1];
         }
         
+        if (idx < 3) console.log(`    [디버그#${idx}] productUrl="${(productUrl||'').substring(0,80)}" slug="${storeSlug}" productId="${productId}"`);
+        
         // 방법 2: nvMid로 상품 상세 페이지 접속
         if (!storeSlug && productId) {
           try {
             const agent = getProxyAgent();
-            const pUrl = `https://search.shopping.naver.com/catalog/${productId}`;
+            // 네이버 쇼핑 상품 페이지에서 스토어 slug 추출
+            const pUrl = `https://smartstore.naver.com/main/products/${productId}`;
             const pRes = await axios.get(pUrl, {
               httpsAgent: agent, timeout: 15000, maxRedirects: 5,
-              headers: { 'User-Agent': randomUA(), 'Accept-Language': 'ko-KR,ko;q=0.9' }
+              headers: { 'User-Agent': randomUA(), 'Accept-Language': 'ko-KR,ko;q=0.9', 'Referer': 'https://search.naver.com/' }
             });
-            const slugM2 = (pRes.data || '').match(/smartstore\.naver\.com\/([a-zA-Z0-9_-]+)/);
+            const pHtml = pRes.data || '';
+            if (idx < 3) console.log(`    [디버그#${idx}] 상품페이지: ${pRes.status} ${pHtml.length}bytes`);
+            const slugM2 = pHtml.match(/smartstore\.naver\.com\/([a-zA-Z0-9_-]+)/);
             if (slugM2) storeSlug = slugM2[1];
-          } catch (e) { /* 무시 */ }
+            
+            // 상품 페이지 자체에서 바로 판매자 정보 추출 시도
+            const telD = pHtml.match(/"(?:tel|phone(?:Number)?|csPhoneNumber|customerCenterTel)"\s*:\s*"([0-9][0-9\-]{5,20})"/);
+            const ceoD = pHtml.match(/"(?:representative(?:Name)?|ceoName|ownerName)"\s*:\s*"([^"]{1,50})"/);
+            if (telD) result.sellerTel = telD[1];
+            if (ceoD) result.sellerCeo = ceoD[1];
+            if (idx < 3) console.log(`    [디버그#${idx}] 상품페이지 직접추출: tel="${result.sellerTel}" ceo="${result.sellerCeo}"`);
+            
+            if (result.sellerTel) {
+              if (storeName) storeInfoCache[storeName] = result;
+              return result;
+            }
+          } catch (e) {
+            if (idx < 3) console.log(`    [디버그#${idx}] 상품페이지 실패: ${e.response?.status || e.message}`);
+          }
         }
         
-        if (!storeSlug) return result;
+        if (!storeSlug) {
+          if (idx < 3) console.log(`    [디버그#${idx}] slug 추출 실패 → 스킵`);
+          return result;
+        }
         
-        // 스토어 메인 페이지 접속하여 channelUid/channelNo 추출
+        // 스토어 메인 페이지 접속하여 판매자 정보 추출
         const agent = getProxyAgent();
         const storeUrl = `https://smartstore.naver.com/${storeSlug}`;
         const sRes = await axios.get(storeUrl, {
@@ -767,15 +789,14 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
           }
         });
         const sHtml = sRes.data || '';
+        if (idx < 3) console.log(`    [디버그#${idx}] 스토어페이지: ${sRes.status} ${sHtml.length}bytes slug=${storeSlug}`);
         
         // HTML에서 판매자 정보 직접 추출 시도
-        // __NEXT_DATA__ 또는 window.__PRELOADED_STATE__ 안의 sellerInfo
         const telPatterns = [
-          /"(?:tel|phone|phoneNumber|sellerTel|customerCenterTel|csPhoneNumber)"\s*:\s*"([0-9\-]{7,20})"/,
-          /"(?:tel|phone|phoneNumber|csPhoneNumber)"\s*:\s*"([0-9\-]{7,20})"/,
+          /"(?:tel|phone|phoneNumber|sellerTel|customerCenterTel|csPhoneNumber)"\s*:\s*"([0-9][0-9\-]{5,20})"/,
         ];
         const ceoPatterns = [
-          /"(?:representative|ceoName|sellerName|representativeName|ownerName)"\s*:\s*"([^"]{1,50})"/,
+          /"(?:representative|representativeName|ceoName|ownerName)"\s*:\s*"([^"]{1,50})"/,
         ];
         
         for (const p of telPatterns) {
@@ -787,11 +808,14 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
           if (m) { result.sellerCeo = m[1]; break; }
         }
         
+        if (idx < 3) console.log(`    [디버그#${idx}] HTML직접: tel="${result.sellerTel}" ceo="${result.sellerCeo}"`);
+        
         // 방법 2: 판매자 정보 API 직접 호출
         if (!result.sellerTel) {
-          // channelUid 추출
           const uidM = sHtml.match(/"channelUid"\s*:\s*"([a-zA-Z0-9_-]+)"/);
           const channelNoM = sHtml.match(/"channelNo"\s*:\s*"?(\d+)"?/);
+          
+          if (idx < 3) console.log(`    [디버그#${idx}] channelUid=${uidM?.[1]||'없음'} channelNo=${channelNoM?.[1]||'없음'}`);
           
           if (uidM || channelNoM) {
             try {
@@ -799,6 +823,7 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
               const infoUrl = channelNoM
                 ? `https://smartstore.naver.com/i/v1/stores/${channelNoM[1]}/seller-info`
                 : `https://smartstore.naver.com/i/v1/stores/${uidM[1]}/seller-info`;
+              if (idx < 3) console.log(`    [디버그#${idx}] API호출: ${infoUrl}`);
               const iRes = await axios.get(infoUrl, {
                 httpsAgent: agent2, timeout: 10000,
                 headers: {
@@ -807,17 +832,22 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
                   'Referer': storeUrl,
                 }
               });
+              if (idx < 3) console.log(`    [디버그#${idx}] API응답: ${iRes.status} keys=${Object.keys(iRes.data||{}).join(',')}`);
               const info = iRes.data;
               if (info) {
                 result.sellerTel = info.tel || info.phone || info.csPhoneNumber || info.customerCenterTel || '';
                 result.sellerCeo = info.representative || info.representativeName || info.ceoName || info.sellerName || '';
               }
-            } catch (e) { /* API 실패 무시 */ }
+            } catch (e) {
+              if (idx < 3) console.log(`    [디버그#${idx}] API실패: ${e.response?.status || e.message}`);
+            }
           }
         }
         
+        if (idx < 3) console.log(`    [디버그#${idx}] 최종: tel="${result.sellerTel}" ceo="${result.sellerCeo}"`);
+        
       } catch (e) {
-        // 개별 실패 무시
+        if (idx < 3) console.log(`    [디버그#${idx}] 전체실패: ${e.response?.status || e.message}`);
       }
       
       if (storeName) storeInfoCache[storeName] = result;
@@ -828,7 +858,7 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
     const BATCH_SIZE = 5;
     for (let bi = 0; bi < allProducts.length; bi += BATCH_SIZE) {
       const batch = allProducts.slice(bi, bi + BATCH_SIZE);
-      const results = await Promise.all(batch.map(p => fetchSellerInfo(p)));
+      const results = await Promise.all(batch.map((p, j) => fetchSellerInfo(p, bi + j)));
       for (let j = 0; j < batch.length; j++) {
         batch[j].sellerTel = results[j].sellerTel;
         batch[j].sellerCeo = results[j].sellerCeo;
