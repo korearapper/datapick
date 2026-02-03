@@ -225,8 +225,9 @@ app.post('/api/extract/place', requireLogin, async (req, res) => {
 
 // =====================================================
 //  스마트스토어 크롤링 (최대 500위) - 프록시 IP 무제한 회전
-//  경로: naver.com → 스토어(shopping.naver.com) → 키워드 검색 → 가격비교
-//  3단계 폴백: 스토어검색 → 가격비교 API → 가격비교 HTML
+//  ※ search.shopping.naver.com = 418 차단 (데이터센터 IP 감지)
+//  ※ 대안: search.naver.com 통합검색 쇼핑탭 (where=shp) 활용
+//  3단계 폴백: 통합검색 쇼핑HTML → 모바일 통합검색 → 네이버 검색광고 API
 // =====================================================
 app.post('/api/extract/store', requireLogin, async (req, res) => {
   const { keyword, startRank, endRank } = req.body;
@@ -239,157 +240,117 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
 
   try {
     console.log(`\n========== 스마트스토어: ${keyword} (${sr}~${er}위) ==========`);
-    console.log(`  경로: naver.com → 스토어 → 키워드 검색 → 가격비교`);
+    console.log(`  경로: search.naver.com 통합검색 쇼핑탭 (where=shp)`);
 
     let allProducts = [];
     const existingRanks = new Set();
-    const ITEMS_PER_PAGE = 80;
+    const ITEMS_PER_PAGE = 40;  // 네이버 통합검색 쇼핑탭은 페이지당 40개
     const totalPages = Math.ceil(er / ITEMS_PER_PAGE);
 
-    // ── 워밍업: 스토어 메인 접속 (쿠키 획득 시뮬레이션) ──
+    // ── 워밍업: 네이버 메인 접속 (쿠키 획득) ──
     let warmupCookies = '';
     try {
       const warmAgent = getProxyAgent();
-      const warmUA = randomUA();
-      const warmRes = await axios.get('https://shopping.naver.com/ns/home', {
-        httpsAgent: warmAgent, timeout: 15000, maxRedirects: 5,
+      const warmRes = await axios.get('https://www.naver.com/', {
+        httpsAgent: warmAgent, timeout: 10000, maxRedirects: 3,
         headers: {
-          'User-Agent': warmUA,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.3',
-          'Referer': 'https://www.naver.com/',
-          'Connection': 'keep-alive',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'same-site',
+          'User-Agent': randomUA(),
+          'Accept': 'text/html,application/xhtml+xml',
+          'Accept-Language': 'ko-KR,ko;q=0.9',
         }
       });
       const setCookies = warmRes.headers['set-cookie'];
       if (setCookies) {
         warmupCookies = setCookies.map(c => c.split(';')[0]).join('; ');
       }
-      console.log(`  ✓ 스토어 메인 접속 (쿠키: ${warmupCookies ? '획득' : '없음'})`);
+      console.log(`  ✓ 네이버 메인 접속 (쿠키: ${warmupCookies ? '획득' : '없음'})`);
     } catch (e) {
-      console.log(`  ⚠ 스토어 워밍업 스킵: ${e.message}`);
+      console.log(`  ⚠ 워밍업 스킵: ${e.message}`);
     }
-    await sleep(500 + Math.random() * 500);
+    await sleep(300 + Math.random() * 400);
 
     for (let page = 1; page <= totalPages; page++) {
-      const offset = (page - 1) * ITEMS_PER_PAGE + 1;
-      if (offset > er) break;
+      const startIdx = (page - 1) * ITEMS_PER_PAGE + 1;
+      if (startIdx > er) break;
 
       let products = [];
       let success = false;
 
       // ══════════════════════════════════════════════════
-      // 1차: 스토어 검색 API (shopping.naver.com 내부 API)
-      //   경로: 스토어에서 키워드 검색 → 검색 결과 내부 API
-      //   Referer: shopping.naver.com (자연스러운 경로)
+      // 1차: 네이버 통합검색 쇼핑탭 (search.naver.com?where=shp)
+      //   일반 검색이라 봇 감지가 search.shopping.naver.com보다 약함
+      //   Referer: www.naver.com (네이버 메인에서 검색)
       // ══════════════════════════════════════════════════
       for (let attempt = 0; attempt < 3 && !success; attempt++) {
         try {
           const agent = getProxyAgent();
           const ua = randomUA();
-          // 스토어 검색 API - shopping.naver.com 내부 경로
-          const storeApiUrl = `https://shopping.naver.com/ns/api/search?query=${encodeURIComponent(keyword)}&sort=POPULAR&pagingIndex=${page}&pagingSize=${ITEMS_PER_PAGE}&viewType=LIST`;
-          const sRes = await axios.get(storeApiUrl, {
-            httpsAgent: agent, timeout: 20000,
+          // 네이버 통합검색 쇼핑탭 - pagingIndex 또는 start 파라미터
+          const shpUrl = `https://search.naver.com/search.naver?where=shp&query=${encodeURIComponent(keyword)}&pagingIndex=${page}&pagingSize=${ITEMS_PER_PAGE}&viewType=list&sort=rel&frm=NVSHSRC`;
+          const sRes = await axios.get(shpUrl, {
+            httpsAgent: agent, timeout: 20000, maxRedirects: 5,
             headers: {
               'User-Agent': ua,
-              'Accept': 'application/json, text/plain, */*',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
               'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
               'Accept-Encoding': 'gzip, deflate, br',
-              'Referer': `https://shopping.naver.com/ns/home?query=${encodeURIComponent(keyword)}`,
-              'Origin': 'https://shopping.naver.com',
-              'Sec-Fetch-Dest': 'empty',
-              'Sec-Fetch-Mode': 'cors',
-              'Sec-Fetch-Site': 'same-origin',
+              'Referer': page === 1 ? 'https://www.naver.com/' : `https://search.naver.com/search.naver?where=shp&query=${encodeURIComponent(keyword)}`,
+              'Sec-Fetch-Dest': 'document',
+              'Sec-Fetch-Mode': 'navigate',
+              'Sec-Fetch-Site': page === 1 ? 'same-site' : 'same-origin',
+              'Sec-Fetch-User': '?1',
+              'Upgrade-Insecure-Requests': '1',
               'Connection': 'keep-alive',
               ...(warmupCookies ? { 'Cookie': warmupCookies } : {}),
             }
           });
-          const rData = sRes.data;
-          // 스토어 API 응답 구조 탐색
-          const extractProducts = (obj) => {
-            if (!obj) return null;
-            // 직접 products 배열
-            if (obj.products && Array.isArray(obj.products)) return obj.products;
-            if (obj.shoppingResult?.products) return obj.shoppingResult.products;
-            if (obj.result?.products) return obj.result.products;
-            if (obj.data?.products) return obj.data.products;
-            // 깊이 탐색
-            if (typeof obj === 'object') {
-              for (const k of Object.keys(obj)) {
-                if (Array.isArray(obj[k]) && obj[k].length > 3 && (obj[k][0]?.productTitle || obj[k][0]?.name || obj[k][0]?.title)) {
-                  return obj[k];
+          const html = sRes.data;
+          const htmlLen = typeof html === 'string' ? html.length : 0;
+
+          // 방법 A: entry.bootstrap JSON 데이터 추출 (2025+ 네이버 구조)
+          const bootstrapMatch = html.match(/entry\.bootstrap\s*\([^,]*,\s*(\{[\s\S]*?\})\s*\)\s*;?\s*<\/script>/);
+          if (bootstrapMatch) {
+            try {
+              const bData = JSON.parse(bootstrapMatch[1]);
+              const findShopItems = (obj, depth = 0) => {
+                if (depth > 20 || !obj) return null;
+                if (Array.isArray(obj) && obj.length > 3) {
+                  if (obj[0]?.productTitle || obj[0]?.item?.productTitle || obj[0]?.adId !== undefined) return obj;
+                }
+                if (typeof obj === 'object') {
+                  for (const k of Object.keys(obj)) {
+                    const f = findShopItems(obj[k], depth + 1);
+                    if (f) return f;
+                  }
+                }
+                return null;
+              };
+              const found = findShopItems(bData);
+              if (found?.length > 0) {
+                products = found.filter(p => (p.item?.productTitle || p.productTitle)).map(p => {
+                  const it = p.item || p;
+                  return {
+                    productName: it.productTitle || '', storeName: it.mallName || it.shopName || '',
+                    price: it.price || it.lowPrice || it.salePrice || '',
+                    reviewCount: it.reviewCount || it.totalReviewCount || 0,
+                    category: it.category1Name || it.categoryName || '',
+                    productUrl: it.mallProductUrl || it.crUrl || '',
+                    productId: it.id || it.nvMid || '',
+                    image: it.imageUrl || it.thumbnailUrl || '', maker: it.maker || '', brand: it.brand || '',
+                  };
+                });
+                if (products.length > 0) {
+                  success = true;
+                  console.log(`  [통합검색bootstrap] 페이지 ${page}: ${products.length}건 ✓`);
                 }
               }
-              for (const k of Object.keys(obj)) {
-                if (typeof obj[k] === 'object' && obj[k] !== null) {
-                  const found = extractProducts(obj[k]);
-                  if (found) return found;
-                }
-              }
+            } catch (pe) {
+              console.log(`  [bootstrap파싱] 에러: ${pe.message}`);
             }
-            return null;
-          };
-          const foundProducts = extractProducts(rData);
-          if (foundProducts && foundProducts.length > 0) {
-            products = foundProducts.map(item => ({
-              productName: item.productTitle || item.name || item.title || '',
-              storeName: item.mallName || item.shopName || item.storeName || '',
-              price: item.price || item.lowPrice || item.salePrice || '',
-              reviewCount: item.reviewCount || item.totalReviewCount || 0,
-              category: item.category1Name || item.categoryName || '',
-              productUrl: item.mallProductUrl || item.productUrl || item.crUrl || '',
-              productId: item.id || item.nvMid || item.productId || '',
-              image: item.imageUrl || item.thumbnailUrl || '',
-              maker: item.maker || '', brand: item.brand || '',
-            }));
-            success = true;
-            console.log(`  [스토어API] 페이지 ${page}: ${products.length}건 ✓`);
           }
-        } catch (e) {
-          console.log(`  [스토어API] 페이지 ${page} 시도${attempt + 1}: ${e.response?.status || e.message}`);
-          await sleep(1500 + attempt * 1500);
-        }
-      }
 
-      // ══════════════════════════════════════════════════
-      // 2차: 가격비교 검색 (search.shopping.naver.com)
-      //   경로: 스토어 검색 결과에서 "가격비교 검색에서 더보기" 클릭
-      //   Referer: shopping.naver.com → search.shopping.naver.com
-      //   핵심: 스토어에서 넘어온 것처럼 Referer & 헤더 세팅
-      // ══════════════════════════════════════════════════
-      if (!success) {
-        for (let attempt = 0; attempt < 3 && !success; attempt++) {
-          try {
-            const agent = getProxyAgent();
-            const ua = randomUA();
-            // "가격비교 검색에서 더보기" 클릭 시뮬레이션
-            const priceCompareUrl = `https://search.shopping.naver.com/search/all?query=${encodeURIComponent(keyword)}&pagingIndex=${page}&pagingSize=${ITEMS_PER_PAGE}&sort=rel&productSet=total&viewType=list`;
-            const pcRes = await axios.get(priceCompareUrl, {
-              httpsAgent: agent, timeout: 20000, maxRedirects: 5,
-              headers: {
-                'User-Agent': ua,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Accept-Encoding': 'gzip, deflate, br',
-                // 핵심: 스토어에서 넘어온 것처럼 Referer
-                'Referer': `https://shopping.naver.com/ns/home?query=${encodeURIComponent(keyword)}`,
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'same-site',
-                'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1',
-                'Connection': 'keep-alive',
-                'Cache-Control': 'max-age=0',
-                ...(warmupCookies ? { 'Cookie': warmupCookies } : {}),
-              }
-            });
-            const html = pcRes.data;
-
-            // __NEXT_DATA__ 파싱 시도
+          // 방법 B: __NEXT_DATA__ JSON 파싱
+          if (!success) {
             const nextMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
             if (nextMatch) {
               try {
@@ -398,157 +359,96 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
                   if (depth > 15 || !obj) return null;
                   if (Array.isArray(obj) && obj.length > 0 && (obj[0]?.item?.productTitle || obj[0]?.productTitle)) return obj;
                   if (typeof obj === 'object') {
-                    for (const k of Object.keys(obj)) {
-                      const f = findProducts(obj[k], depth + 1);
-                      if (f) return f;
-                    }
+                    for (const k of Object.keys(obj)) { const f = findProducts(obj[k], depth + 1); if (f) return f; }
                   }
                   return null;
                 };
                 const found = findProducts(nd);
                 if (found?.length > 0) {
-                  products = found.map(p => {
-                    const it = p.item || p;
-                    return {
-                      productName: it.productTitle || it.productName || '',
-                      storeName: it.mallName || it.shopName || '',
-                      price: it.price || it.lowPrice || '',
-                      reviewCount: it.reviewCount || 0,
-                      category: it.category1Name || '',
-                      productUrl: it.mallProductUrl || '',
-                      productId: it.id || it.nvMid || '',
-                      image: it.imageUrl || '', maker: it.maker || '', brand: it.brand || '',
-                    };
-                  });
+                  products = found.map(p => { const it = p.item || p; return {
+                    productName: it.productTitle || '', storeName: it.mallName || '',
+                    price: it.price || it.lowPrice || '', reviewCount: it.reviewCount || 0,
+                    category: it.category1Name || '', productUrl: it.mallProductUrl || '',
+                    productId: it.id || '', image: it.imageUrl || '', maker: it.maker || '', brand: it.brand || '',
+                  }; });
                   success = true;
-                  console.log(`  [가격비교NEXT] 페이지 ${page}: ${products.length}건 ✓`);
+                  console.log(`  [통합검색NEXT] 페이지 ${page}: ${products.length}건 ✓`);
                 }
-              } catch (pe) {
-                console.log(`  [가격비교NEXT] 파싱 에러: ${pe.message}`);
-              }
+              } catch (pe) {}
             }
-
-            // __NEXT_DATA__ 실패 시 정규식 폴백
-            if (!success) {
-              const titles = [...html.matchAll(/"productTitle"\s*:\s*"([^"]{2,200})"/g)];
-              const malls = [...html.matchAll(/"mallName"\s*:\s*"([^"]{1,100})"/g)];
-              const prices = [...html.matchAll(/"price"\s*:\s*"?(\d+)"?/g)];
-              if (titles.length > 0) {
-                for (let j = 0; j < titles.length; j++) {
-                  products.push({
-                    productName: titles[j]?.[1] || '', storeName: malls[j]?.[1] || '',
-                    price: prices[j]?.[1] || '', reviewCount: 0, category: '',
-                    productUrl: '', productId: '', image: '', maker: '', brand: '',
-                  });
-                }
-                success = true;
-                console.log(`  [가격비교정규식] 페이지 ${page}: ${products.length}건 ✓`);
-              }
-            }
-          } catch (e) {
-            console.log(`  [가격비교] 페이지 ${page} 시도${attempt + 1}: ${e.response?.status || e.message}`);
-            await sleep(2000 + attempt * 2000);
           }
+
+          // 방법 C: HTML 정규식 폴백 (productTitle/mallName/price 패턴)
+          if (!success) {
+            const titles = [...html.matchAll(/"productTitle"\s*:\s*"([^"]{2,200})"/g)];
+            const malls = [...html.matchAll(/"mallName"\s*:\s*"([^"]{1,100})"/g)];
+            const prices = [...html.matchAll(/"(?:price|lowPrice|salePrice)"\s*:\s*"?(\d+)"?/g)];
+            if (titles.length > 3) {
+              for (let j = 0; j < titles.length; j++) {
+                products.push({
+                  productName: titles[j]?.[1] || '', storeName: malls[j]?.[1] || '',
+                  price: prices[j]?.[1] || '', reviewCount: 0, category: '',
+                  productUrl: '', productId: '', image: '', maker: '', brand: '',
+                });
+              }
+              success = true;
+              console.log(`  [통합검색정규식] 페이지 ${page}: ${products.length}건 ✓`);
+            }
+          }
+
+          // 방법 D: 쇼핑 영역 일반 HTML 파싱 (li.basicList_item 등)
+          if (!success && htmlLen > 5000) {
+            // 상품 제목 후보 패턴들
+            const altTitles = [...html.matchAll(/class="[^"]*(?:tit|title|name)[^"]*"[^>]*>([^<]{3,150})</g)];
+            const altPrices = [...html.matchAll(/class="[^"]*(?:price|num)[^"]*"[^>]*>([0-9,]+)/g)];
+            if (altTitles.length > 5) {
+              for (let j = 0; j < altTitles.length; j++) {
+                products.push({
+                  productName: altTitles[j]?.[1]?.trim() || '', storeName: '',
+                  price: altPrices[j]?.[1]?.replace(/,/g, '') || '', reviewCount: 0,
+                  category: '', productUrl: '', productId: '', image: '', maker: '', brand: '',
+                });
+              }
+              success = true;
+              console.log(`  [통합검색HTML] 페이지 ${page}: ${products.length}건 ✓`);
+            }
+          }
+
+          if (!success) {
+            console.log(`  [통합검색] 페이지 ${page} 시도${attempt + 1}: 200 but no data (html: ${htmlLen}bytes)`);
+          }
+        } catch (e) {
+          console.log(`  [통합검색] 페이지 ${page} 시도${attempt + 1}: ${e.response?.status || e.message}`);
+          await sleep(1500 + attempt * 1500);
         }
       }
 
       // ══════════════════════════════════════════════════
-      // 3차: 가격비교 JSON API (search.shopping.naver.com/api)
-      //   가격비교 페이지 내부에서 사용하는 API
-      //   Referer: search.shopping.naver.com (가격비교 페이지에서 호출)
+      // 2차: 모바일 통합검색 쇼핑 (m.search.naver.com)
+      //   모바일은 봇 감지가 더 약함
       // ══════════════════════════════════════════════════
       if (!success) {
-        for (let attempt = 0; attempt < 3 && !success; attempt++) {
+        for (let attempt = 0; attempt < 2 && !success; attempt++) {
           try {
             const agent = getProxyAgent();
-            const ua = randomUA();
-            const apiUrl = `https://search.shopping.naver.com/api/search/all?query=${encodeURIComponent(keyword)}&sort=rel&pagingIndex=${page}&pagingSize=${ITEMS_PER_PAGE}&viewType=list&productSet=total`;
-            const aRes = await axios.get(apiUrl, {
-              httpsAgent: agent, timeout: 20000,
+            const mUrl = `https://m.search.naver.com/search.naver?where=shm_shp&query=${encodeURIComponent(keyword)}&start=${startIdx}&display=${ITEMS_PER_PAGE}`;
+            const mRes = await axios.get(mUrl, {
+              httpsAgent: agent, timeout: 20000, maxRedirects: 5,
               headers: {
-                'User-Agent': ua,
-                'Accept': 'application/json, text/plain, */*',
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+                'Accept': 'text/html,application/xhtml+xml',
                 'Accept-Language': 'ko-KR,ko;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                // 가격비교 페이지 내부에서 호출하는 것처럼
-                'Referer': `https://search.shopping.naver.com/search/all?query=${encodeURIComponent(keyword)}&pagingIndex=${page}`,
-                'Origin': 'https://search.shopping.naver.com',
-                'Sec-Fetch-Dest': 'empty',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'same-origin',
-                ...(warmupCookies ? { 'Cookie': warmupCookies } : {}),
+                'Referer': 'https://m.naver.com/',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
               }
             });
-            if (aRes.data?.shoppingResult?.products) {
-              products = aRes.data.shoppingResult.products.map(item => ({
-                productName: item.productTitle || item.productName || '',
-                storeName: item.mallName || item.shopName || '',
-                price: item.price || item.lowPrice || '',
-                reviewCount: item.reviewCount || item.totalReviewCount || 0,
-                category: item.category1Name || '',
-                productUrl: item.mallProductUrl || item.crUrl || '',
-                productId: item.id || item.nvMid || '',
-                image: item.imageUrl || '', maker: item.maker || '', brand: item.brand || '',
-              }));
-              success = true;
-              console.log(`  [가격비교API] 페이지 ${page}: ${products.length}건 ✓`);
-            }
-          } catch (e) {
-            console.log(`  [가격비교API] 페이지 ${page} 시도${attempt + 1}: ${e.response?.status || e.message}`);
-            await sleep(2500 + attempt * 2000);
-          }
-        }
-      }
+            const mHtml = mRes.data;
 
-      // ══════════════════════════════════════════════════
-      // 4차: 모바일 가격비교 (최종 폴백)
-      //   모바일 버전은 봇 감지가 약함
-      // ══════════════════════════════════════════════════
-      if (!success) {
-        try {
-          const agent = getProxyAgent();
-          const mUrl = `https://msearch.shopping.naver.com/search/all?query=${encodeURIComponent(keyword)}&pagingIndex=${page}&sort=rel`;
-          const mRes = await axios.get(mUrl, {
-            httpsAgent: agent, timeout: 20000,
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-              'Accept': 'text/html,application/xhtml+xml',
-              'Accept-Language': 'ko-KR,ko;q=0.9',
-              'Referer': 'https://m.shopping.naver.com/',
-              'Sec-Fetch-Dest': 'document',
-              'Sec-Fetch-Mode': 'navigate',
-            }
-          });
-          const mHtml = mRes.data;
-          // __NEXT_DATA__ 시도
-          const mNext = mHtml.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
-          if (mNext) {
-            try {
-              const mnd = JSON.parse(mNext[1]);
-              const findP = (o, d = 0) => {
-                if (d > 15 || !o) return null;
-                if (Array.isArray(o) && o.length > 0 && (o[0]?.item?.productTitle || o[0]?.productTitle)) return o;
-                if (typeof o === 'object') { for (const k of Object.keys(o)) { const f = findP(o[k], d + 1); if (f) return f; } }
-                return null;
-              };
-              const mFound = findP(mnd);
-              if (mFound?.length > 0) {
-                products = mFound.map(p => { const it = p.item || p; return {
-                  productName: it.productTitle || '', storeName: it.mallName || '',
-                  price: it.price || it.lowPrice || '', reviewCount: it.reviewCount || 0,
-                  category: it.category1Name || '', productUrl: '', productId: it.id || '',
-                  image: '', maker: '', brand: '',
-                }; });
-                success = true;
-                console.log(`  [모바일NEXT] 페이지 ${page}: ${products.length}건 ✓`);
-              }
-            } catch (me) {}
-          }
-          // 정규식 폴백
-          if (!success) {
+            // productTitle 정규식
             const mTitles = [...mHtml.matchAll(/"productTitle"\s*:\s*"([^"]{2,200})"/g)];
             const mMalls = [...mHtml.matchAll(/"mallName"\s*:\s*"([^"]{1,100})"/g)];
-            const mPrices = [...mHtml.matchAll(/"price"\s*:\s*"?(\d+)"?/g)];
+            const mPrices = [...mHtml.matchAll(/"(?:price|lowPrice)"\s*:\s*"?(\d+)"?/g)];
             if (mTitles.length > 0) {
               for (let j = 0; j < mTitles.length; j++) {
                 products.push({
@@ -558,10 +458,77 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
                 });
               }
               success = true;
-              console.log(`  [모바일정규식] 페이지 ${page}: ${products.length}건 ✓`);
+              console.log(`  [모바일통합] 페이지 ${page}: ${products.length}건 ✓`);
+            } else {
+              // bootstrap 데이터 시도
+              const bMatch = mHtml.match(/entry\.bootstrap\s*\([^,]*,\s*(\{[\s\S]*?\})\s*\)\s*;?\s*<\/script>/);
+              if (bMatch) {
+                try {
+                  const bd = JSON.parse(bMatch[1]);
+                  const findItems = (o, d = 0) => {
+                    if (d > 20 || !o) return null;
+                    if (Array.isArray(o) && o.length > 3 && (o[0]?.productTitle || o[0]?.item?.productTitle)) return o;
+                    if (typeof o === 'object') { for (const k of Object.keys(o)) { const f = findItems(o[k], d + 1); if (f) return f; } }
+                    return null;
+                  };
+                  const mf = findItems(bd);
+                  if (mf?.length > 0) {
+                    products = mf.filter(p => (p.item?.productTitle || p.productTitle)).map(p => {
+                      const it = p.item || p;
+                      return {
+                        productName: it.productTitle || '', storeName: it.mallName || '',
+                        price: it.price || it.lowPrice || '', reviewCount: it.reviewCount || 0,
+                        category: '', productUrl: '', productId: it.id || '',
+                        image: '', maker: '', brand: '',
+                      };
+                    });
+                    success = true;
+                    console.log(`  [모바일bootstrap] 페이지 ${page}: ${products.length}건 ✓`);
+                  }
+                } catch (e) {}
+              }
+              if (!success) console.log(`  [모바일통합] 페이지 ${page} 시도${attempt + 1}: no data (${mHtml.length}bytes)`);
             }
+          } catch (e) {
+            console.log(`  [모바일통합] 페이지 ${page} 시도${attempt + 1}: ${e.response?.status || e.message}`);
+            await sleep(2000 + attempt * 2000);
           }
-          if (!success) console.log(`  ✗ 페이지 ${page}: 전체 실패`);
+        }
+      }
+
+      // ══════════════════════════════════════════════════
+      // 3차: 네이버 쇼핑 모바일 (msearch.shopping.naver.com)
+      //   마지막 시도 - 모바일 쇼핑
+      // ══════════════════════════════════════════════════
+      if (!success) {
+        try {
+          const agent = getProxyAgent();
+          const msUrl = `https://msearch.shopping.naver.com/search/all?query=${encodeURIComponent(keyword)}&pagingIndex=${page}&sort=rel`;
+          const msRes = await axios.get(msUrl, {
+            httpsAgent: agent, timeout: 20000,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+              'Accept': 'text/html', 'Accept-Language': 'ko-KR,ko;q=0.9',
+              'Referer': 'https://m.shopping.naver.com/',
+            }
+          });
+          const msHtml = msRes.data;
+          const msTitles = [...msHtml.matchAll(/"productTitle"\s*:\s*"([^"]{2,200})"/g)];
+          const msMalls = [...msHtml.matchAll(/"mallName"\s*:\s*"([^"]{1,100})"/g)];
+          const msPrices = [...msHtml.matchAll(/"(?:price|lowPrice)"\s*:\s*"?(\d+)"?/g)];
+          if (msTitles.length > 0) {
+            for (let j = 0; j < msTitles.length; j++) {
+              products.push({
+                productName: msTitles[j]?.[1] || '', storeName: msMalls[j]?.[1] || '',
+                price: msPrices[j]?.[1] || '', reviewCount: 0, category: '',
+                productUrl: '', productId: '', image: '', maker: '', brand: '',
+              });
+            }
+            success = true;
+            console.log(`  [모바일쇼핑] 페이지 ${page}: ${products.length}건 ✓`);
+          } else {
+            console.log(`  ✗ 페이지 ${page}: 전체 실패`);
+          }
         } catch (e) {
           console.log(`  ✗ 페이지 ${page}: 최종 실패 (${e.response?.status || e.message})`);
         }
@@ -575,8 +542,8 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
         existingRanks.add(globalRank);
       }
       if (allProducts.length >= count) break;
-      // 페이지 간 딜레이 (자연스러운 패턴)
-      await sleep(1000 + Math.random() * 1000);
+      // 페이지 간 딜레이
+      await sleep(800 + Math.random() * 800);
     }
 
     allProducts.sort((a, b) => a.rank - b.rank);
