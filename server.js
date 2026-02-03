@@ -780,7 +780,7 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
     const fetchSellerInfo = async (product, idx) => {
       const { storeName, productUrl, productId, storeSlug: preSlug } = product;
       
-      // 캐시 확인
+      // 캐시 확인 (같은 스토어는 재조회 안함)
       if (storeName && storeInfoCache[storeName]) {
         return storeInfoCache[storeName];
       }
@@ -793,151 +793,193 @@ app.post('/api/extract/store', requireLogin, async (req, res) => {
         // productUrl에서 slug 추출
         if (!storeSlug && productUrl) {
           const slugM = productUrl.match(/smartstore\.naver\.com\/([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})/);
-          if (slugM) storeSlug = slugM[1];
+          if (slugM && slugM[1] !== 'main' && slugM[1] !== 'inflow') storeSlug = slugM[1];
         }
         
-        if (idx < 3) console.log(`    [디버그#${idx}] preSlug="${preSlug||''}" slug="${storeSlug}" productId="${productId}"`);
+        if (idx < 5) console.log(`    [디버그#${idx}] slug="${storeSlug}" productId="${productId}"`);
         
-        // 방법 1: nvMid로 네이버 쇼핑 카탈로그 페이지 (search.naver.com 경유 - 차단 약함)
-        if (!storeSlug && productId) {
+        // ── 방법 A: 네이버 쇼핑 상품 API (channelUid 확보) ──
+        // shopping.naver.com의 상품 상세 API - 차단이 상대적으로 약함
+        let channelUid = '';
+        if (productId) {
           try {
             const agent = getProxyAgent();
-            // 네이버 통합검색에서 nvMid로 상품 정보 조회
-            const catUrl = `https://search.naver.com/search.naver?where=shp&query=${productId}&nso=&pagingIndex=1&pagingSize=1`;
-            const cRes = await axios.get(catUrl, {
-              httpsAgent: agent, timeout: 15000, maxRedirects: 5,
-              headers: { 'User-Agent': randomUA(), 'Accept-Language': 'ko-KR,ko;q=0.9', 'Referer': 'https://www.naver.com/' }
+            const apiUrl = `https://shopping.naver.com/shopv/v1/product/${productId}/channel`;
+            const aRes = await axios.get(apiUrl, {
+              httpsAgent: agent, timeout: 12000,
+              headers: { 
+                'User-Agent': randomUA(), 
+                'Accept': 'application/json',
+                'Referer': 'https://shopping.naver.com/',
+                'Accept-Language': 'ko-KR,ko;q=0.9',
+              }
             });
-            const cHtml = cRes.data || '';
-            const slugM2 = cHtml.match(/smartstore\.naver\.com\/([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})/);
-            if (slugM2 && slugM2[1] !== 'main') storeSlug = slugM2[1];
-            if (idx < 3) console.log(`    [디버그#${idx}] 카탈로그검색: ${cRes.status} slug=${storeSlug}`);
+            const d = aRes.data;
+            if (idx < 5) console.log(`    [디버그#${idx}] 쇼핑API: ${aRes.status} keys=${Object.keys(d||{}).slice(0,8)}`);
+            if (d) {
+              channelUid = d.channelUid || d.channel?.uid || '';
+              if (!storeSlug) storeSlug = d.url || d.channel?.url || '';
+              // 직접 판매자 정보가 있을 수 있음
+              const si = d.sellerInfo || d.seller || d.channelInfo || {};
+              if (si.tel || si.csPhoneNumber) result.sellerTel = si.tel || si.csPhoneNumber || '';
+              if (si.representative || si.ceoName) result.sellerCeo = si.representative || si.ceoName || '';
+            }
           } catch (e) {
-            if (idx < 3) console.log(`    [디버그#${idx}] 카탈로그 실패: ${e.response?.status || e.message}`);
+            if (idx < 5) console.log(`    [디버그#${idx}] 쇼핑API: ${e.response?.status || e.message}`);
           }
         }
         
-        if (!storeSlug || storeSlug === 'main' || storeSlug === 'inflow') {
-          if (idx < 3) console.log(`    [디버그#${idx}] slug 없음 → 스킵`);
-          return result;
+        // ── 방법 B: 네이버 쇼핑 상품 상세 페이지 (모바일) ──
+        if (!result.sellerTel && productId) {
+          try {
+            const agent = getProxyAgent();
+            const mUrl = `https://msearch.shopping.naver.com/product/${productId}`;
+            const mRes = await axios.get(mUrl, {
+              httpsAgent: agent, timeout: 12000, maxRedirects: 5,
+              headers: { 
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+                'Accept': 'text/html,application/xhtml+xml',
+                'Accept-Language': 'ko-KR,ko;q=0.9',
+                'Referer': 'https://msearch.shopping.naver.com/',
+              }
+            });
+            const mHtml = mRes.data || '';
+            if (idx < 5) console.log(`    [디버그#${idx}] 모바일쇼핑: ${mRes.status} ${mHtml.length}bytes`);
+            
+            // channelUid 추출
+            if (!channelUid) {
+              const uidM = mHtml.match(/"channelUid"\s*:\s*"([a-zA-Z0-9_-]+)"/);
+              if (uidM) channelUid = uidM[1];
+            }
+            // slug 추출  
+            if (!storeSlug || storeSlug === 'main' || storeSlug === 'inflow') {
+              const sM = mHtml.match(/smartstore\.naver\.com\/([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})(?:\/|")/);
+              if (sM && sM[1] !== 'main' && sM[1] !== 'inflow') storeSlug = sM[1];
+            }
+            // 전화번호/대표자 직접 추출
+            const telM = mHtml.match(/"(?:tel|phoneNumber|csPhoneNumber|customerCenterTel|representTelNo)"\s*:\s*"([0-9][0-9\-]{5,20})"/);
+            const ceoM = mHtml.match(/"(?:representative|representativeName|ceoName|ownerName)"\s*:\s*"([^"]{1,50})"/);
+            if (telM) result.sellerTel = telM[1];
+            if (ceoM) result.sellerCeo = ceoM[1];
+            if (idx < 5) console.log(`    [디버그#${idx}] 모바일직접: tel="${result.sellerTel}" ceo="${result.sellerCeo}" uid=${channelUid}`);
+          } catch (e) {
+            if (idx < 5) console.log(`    [디버그#${idx}] 모바일쇼핑실패: ${e.response?.status || e.message}`);
+          }
         }
         
-        // 방법 2: 스토어 메인 페이지 접속 → 판매자 정보 HTML 추출
-        try {
-          const agent = getProxyAgent();
-          const storeUrl = `https://smartstore.naver.com/${storeSlug}`;
-          const sRes = await axios.get(storeUrl, {
-            httpsAgent: agent, timeout: 15000, maxRedirects: 5,
-            headers: {
-              'User-Agent': randomUA(),
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-              'Accept-Language': 'ko-KR,ko;q=0.9',
-              'Referer': 'https://search.naver.com/',
-            }
-          });
-          const sHtml = sRes.data || '';
-          if (idx < 3) console.log(`    [디버그#${idx}] 스토어: ${sRes.status} ${sHtml.length}bytes`);
-          
-          // 전화번호 추출
-          const telM = sHtml.match(/"(?:tel|phoneNumber|csPhoneNumber|customerCenterTel|representTelNo)"\s*:\s*"([0-9][0-9\-]{5,20})"/);
-          if (telM) result.sellerTel = telM[1];
-          
-          // 대표자 추출
-          const ceoM = sHtml.match(/"(?:representative|representativeName|ceoName|ownerName)"\s*:\s*"([^"]{1,50})"/);
-          if (ceoM) result.sellerCeo = ceoM[1];
-          
-          if (idx < 3) console.log(`    [디버그#${idx}] HTML직접: tel="${result.sellerTel}" ceo="${result.sellerCeo}"`);
-          
-          // channelUid로 API 시도
-          if (!result.sellerTel) {
-            const uidM = sHtml.match(/"channelUid"\s*:\s*"([a-zA-Z0-9_-]+)"/);
-            const chNoM = sHtml.match(/"channelNo"\s*:\s*"?(\d+)"?/);
-            if (idx < 3) console.log(`    [디버그#${idx}] uid=${uidM?.[1]||'X'} chNo=${chNoM?.[1]||'X'}`);
-            
-            if (uidM || chNoM) {
-              try {
-                const agent2 = getProxyAgent();
-                const id = chNoM?.[1] || uidM[1];
-                const infoUrl = `https://smartstore.naver.com/i/v1/stores/${id}/seller-info`;
-                const iRes = await axios.get(infoUrl, {
-                  httpsAgent: agent2, timeout: 10000,
-                  headers: { 'User-Agent': randomUA(), 'Accept': 'application/json', 'Referer': storeUrl }
-                });
-                const info = iRes.data;
-                if (idx < 3) console.log(`    [디버그#${idx}] API: ${iRes.status} keys=${Object.keys(info||{}).slice(0,10).join(',')}`);
-                if (info) {
-                  result.sellerTel = info.tel || info.phone || info.csPhoneNumber || info.customerCenterTel || info.representTelNo || '';
-                  result.sellerCeo = info.representative || info.representativeName || info.ceoName || info.ownerName || '';
-                }
-              } catch (e) {
-                if (idx < 3) console.log(`    [디버그#${idx}] API실패: ${e.response?.status || e.message}`);
+        // ── 방법 C: brand.naver.com API (channelUid 있을 때) ──
+        if (!result.sellerTel && channelUid) {
+          try {
+            const agent = getProxyAgent();
+            const bUrl = `https://brand.naver.com/n/v2/channels/${channelUid}?withWindow=false`;
+            const bRes = await axios.get(bUrl, {
+              httpsAgent: agent, timeout: 12000,
+              headers: {
+                'User-Agent': randomUA(),
+                'Accept': 'application/json',
+                'Referer': 'https://brand.naver.com/',
               }
+            });
+            const bd = bRes.data;
+            if (idx < 5) console.log(`    [디버그#${idx}] brandAPI: ${bRes.status} keys=${Object.keys(bd||{}).slice(0,8)}`);
+            if (bd) {
+              const si = bd.sellerInfo || bd.businessInfo || bd.channelInfo || bd;
+              result.sellerTel = si.tel || si.phone || si.csPhoneNumber || si.customerCenterTel || si.representTelNo || result.sellerTel;
+              result.sellerCeo = si.representative || si.representativeName || si.ceoName || si.ownerName || result.sellerCeo;
             }
+          } catch (e) {
+            if (idx < 5) console.log(`    [디버그#${idx}] brandAPI: ${e.response?.status || e.message}`);
+          }
+        }
+        
+        // ── 방법 D: 스토어 메인 페이지 접속 (slug 있을 때, 마지막 수단) ──
+        if (!result.sellerTel && storeSlug && storeSlug !== 'main' && storeSlug !== 'inflow') {
+          // 딜레이를 길게 줘서 429 방지
+          await sleep(1500 + Math.random() * 1000);
+          try {
+            const agent = getProxyAgent();
+            const storeUrl = `https://m.smartstore.naver.com/${storeSlug}`;
+            const sRes = await axios.get(storeUrl, {
+              httpsAgent: agent, timeout: 15000, maxRedirects: 5,
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+                'Accept': 'text/html,application/xhtml+xml',
+                'Accept-Language': 'ko-KR,ko;q=0.9',
+                'Referer': 'https://m.search.naver.com/',
+              }
+            });
+            const sHtml = sRes.data || '';
+            if (idx < 5) console.log(`    [디버그#${idx}] 모바일스토어: ${sRes.status} ${sHtml.length}bytes`);
             
-            // 최후: __NEXT_DATA__ 안에서 seller 관련 키 전부 덤프
-            if (idx < 3 && !result.sellerTel) {
-              const nextDataM = sHtml.match(/__NEXT_DATA__[^>]*>\s*(\{[\s\S]*?\})\s*<\/script/);
-              if (nextDataM) {
-                console.log(`    [디버그#${idx}] __NEXT_DATA__ 발견 (${nextDataM[1].length}bytes)`);
-                const sellerKeys = [...nextDataM[1].matchAll(/"([^"]*(?:seller|tel|phone|ceo|representative|owner|Tel|Phone)[^"]*)"\s*:\s*"([^"]{1,100})"/gi)];
-                sellerKeys.slice(0, 15).forEach(sk => console.log(`      ${sk[1]}="${sk[2]}"`));
-              } else {
-                // script 태그 전체에서 tel/phone 키 찾기
-                const anyTel = [...sHtml.matchAll(/"([^"]*(?:tel|phone|Tel|Phone)[^"]*)"\s*:\s*"([^"]{3,30})"/g)];
-                const anyCeo = [...sHtml.matchAll(/"([^"]*(?:representative|ceo|owner|CEO|Owner)[^"]*)"\s*:\s*"([^"]{1,50})"/gi)];
-                console.log(`    [디버그#${idx}] tel키=${anyTel.length}개 ceo키=${anyCeo.length}개`);
+            const telM = sHtml.match(/"(?:tel|phoneNumber|csPhoneNumber|customerCenterTel|representTelNo)"\s*:\s*"([0-9][0-9\-]{5,20})"/);
+            const ceoM = sHtml.match(/"(?:representative|representativeName|ceoName|ownerName)"\s*:\s*"([^"]{1,50})"/);
+            if (telM) result.sellerTel = telM[1];
+            if (ceoM) result.sellerCeo = ceoM[1];
+            
+            // channelNo로 seller-info API
+            if (!result.sellerTel) {
+              const chNoM = sHtml.match(/"channelNo"\s*:\s*"?(\d+)"?/);
+              const uidM2 = sHtml.match(/"channelUid"\s*:\s*"([a-zA-Z0-9_-]+)"/);
+              if (idx < 5) console.log(`    [디버그#${idx}] chNo=${chNoM?.[1]||'X'} uid=${uidM2?.[1]||'X'}`);
+              
+              const chId = chNoM?.[1] || uidM2?.[1];
+              if (chId) {
+                try {
+                  const agent2 = getProxyAgent();
+                  const infoUrl = `https://smartstore.naver.com/i/v1/stores/${chId}/seller-info`;
+                  const iRes = await axios.get(infoUrl, {
+                    httpsAgent: agent2, timeout: 10000,
+                    headers: { 'User-Agent': randomUA(), 'Accept': 'application/json', 'Referer': `https://smartstore.naver.com/${storeSlug}` }
+                  });
+                  const info = iRes.data;
+                  if (idx < 5) console.log(`    [디버그#${idx}] sellerAPI: ${iRes.status} keys=${Object.keys(info||{}).slice(0,10)}`);
+                  if (info) {
+                    result.sellerTel = info.tel || info.phone || info.csPhoneNumber || info.representTelNo || '';
+                    result.sellerCeo = info.representative || info.representativeName || info.ceoName || info.ownerName || '';
+                  }
+                } catch (e2) {
+                  if (idx < 5) console.log(`    [디버그#${idx}] sellerAPI실패: ${e2.response?.status || e2.message}`);
+                }
+              }
+              
+              // 마지막: HTML 전체에서 전화번호 패턴 직접 스캔
+              if (!result.sellerTel && idx < 5) {
+                const anyTel = [...sHtml.matchAll(/"([^"]*(?:tel|phone|Tel|Phone)[^"]*)"\s*:\s*"([0-9][0-9\-]{5,20})"/g)];
+                const anyCeo = [...sHtml.matchAll(/"([^"]*(?:representative|ceo|owner|CEO|Owner|Representative)[^"]*)"\s*:\s*"([^"]{1,50})"/gi)];
+                console.log(`    [디버그#${idx}] HTML스캔: tel키=${anyTel.length} ceo키=${anyCeo.length}`);
                 anyTel.slice(0, 5).forEach(t => console.log(`      ${t[1]}="${t[2]}"`));
                 anyCeo.slice(0, 5).forEach(c => console.log(`      ${c[1]}="${c[2]}"`));
               }
             }
-          }
-        } catch (e) {
-          if (idx < 3) console.log(`    [디버그#${idx}] 스토어접속 실패: ${e.response?.status || e.message}`);
-          
-          // 스토어 직접 접속 실패(490) → store.naver.com 경유
-          if (e.response?.status === 490 || e.response?.status === 403) {
-            try {
-              const agent3 = getProxyAgent();
-              const altUrl = `https://m.smartstore.naver.com/${storeSlug}`;
-              const mRes = await axios.get(altUrl, {
-                httpsAgent: agent3, timeout: 15000, maxRedirects: 5,
-                headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1', 'Accept-Language': 'ko-KR,ko;q=0.9', 'Referer': 'https://m.search.naver.com/' }
-              });
-              const mHtml = mRes.data || '';
-              if (idx < 3) console.log(`    [디버그#${idx}] 모바일스토어: ${mRes.status} ${mHtml.length}bytes`);
-              const mTel = mHtml.match(/"(?:tel|phoneNumber|csPhoneNumber|customerCenterTel|representTelNo)"\s*:\s*"([0-9][0-9\-]{5,20})"/);
-              const mCeo = mHtml.match(/"(?:representative|representativeName|ceoName|ownerName)"\s*:\s*"([^"]{1,50})"/);
-              if (mTel) result.sellerTel = mTel[1];
-              if (mCeo) result.sellerCeo = mCeo[1];
-            } catch (e2) {
-              if (idx < 3) console.log(`    [디버그#${idx}] 모바일도 실패: ${e2.response?.status || e2.message}`);
-            }
+          } catch (e) {
+            if (idx < 5) console.log(`    [디버그#${idx}] 스토어접속실패: ${e.response?.status || e.message}`);
           }
         }
         
-        if (idx < 3) console.log(`    [디버그#${idx}] 최종: tel="${result.sellerTel}" ceo="${result.sellerCeo}"`);
+        if (idx < 5) console.log(`    [디버그#${idx}] ★최종: tel="${result.sellerTel}" ceo="${result.sellerCeo}"`);
         
       } catch (e) {
-        if (idx < 3) console.log(`    [디버그#${idx}] 전체실패: ${e.response?.status || e.message}`);
+        if (idx < 5) console.log(`    [디버그#${idx}] 전체실패: ${e.message}`);
       }
       
       if (storeName) storeInfoCache[storeName] = result;
       return result;
     };
     
-    // 병렬 처리 (5개씩 배치)
-    const BATCH_SIZE = 5;
-    for (let bi = 0; bi < allProducts.length; bi += BATCH_SIZE) {
-      const batch = allProducts.slice(bi, bi + BATCH_SIZE);
-      const results = await Promise.all(batch.map((p, j) => fetchSellerInfo(p, bi + j)));
-      for (let j = 0; j < batch.length; j++) {
-        batch[j].sellerTel = results[j].sellerTel;
-        batch[j].sellerCeo = results[j].sellerCeo;
+    // ★ 순차 처리 (429 방지 - 1건씩 + 딜레이)
+    for (let i = 0; i < allProducts.length; i++) {
+      const info = await fetchSellerInfo(allProducts[i], i);
+      allProducts[i].sellerTel = info.sellerTel;
+      allProducts[i].sellerCeo = info.sellerCeo;
+      
+      // 캐시 히트가 아니면 딜레이
+      if (!storeInfoCache[allProducts[i].storeName + '_cached']) {
+        await sleep(800 + Math.random() * 700);
       }
-      if (bi + BATCH_SIZE < allProducts.length) await sleep(500);
-      if ((bi + BATCH_SIZE) % 20 === 0) {
+      
+      if ((i + 1) % 10 === 0 || i === allProducts.length - 1) {
         const filled = allProducts.filter(p => p.sellerTel).length;
-        console.log(`  [판매자정보] ${Math.min(bi + BATCH_SIZE, allProducts.length)}/${allProducts.length} 처리 (전화번호 ${filled}건)`);
+        console.log(`  [판매자정보] ${i + 1}/${allProducts.length} 처리 (전화번호 ${filled}건)`);
       }
     }
     
