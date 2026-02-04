@@ -10,26 +10,37 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'datapick-secret-key-2024';
+
 app.set('trust proxy', 1);
 
 const db = new Database('database.db');
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL, points INTEGER DEFAULT 0, is_admin INTEGER DEFAULT 0,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    points INTEGER DEFAULT 0,
+    is_admin INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS point_history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount INTEGER,
-    type TEXT, description TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    amount INTEGER,
+    type TEXT,
+    description TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id)
   );
 `);
 
+// 관리자 계정
 const adminExists = db.prepare('SELECT id FROM users WHERE username = ?').get('admin');
 if (!adminExists) {
-  db.prepare('INSERT INTO users (username, password, points, is_admin) VALUES (?, ?, ?, ?)').run('admin', bcrypt.hashSync('admin1234', 10), 1000000, 1);
-  console.log('관리자 계정 생성됨 - ID: admin, PW: admin1234, 포인트: 1,000,000');
+  const hashedPw = bcrypt.hashSync('admin1234', 10);
+  db.prepare('INSERT INTO users (username, password, points, is_admin) VALUES (?, ?, ?, ?)').run('admin', hashedPw, 1000000, 1);
+  console.log('관리자 계정 생성됨 - admin / admin1234 (1,000,000P)');
 }
 
 app.use(express.json());
@@ -37,1013 +48,428 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ============ 프록시 (10,000개 포트 = 10,000개 IP) ============
-const PROXY_HOST = 'kr.decodo.com';
-const PROXY_USER = 'spuqtp2czv';
-const PROXY_PASS = '1voaShrNj_2f4V3hgB';
+// ============================================================
+// 프록시 설정 - 10,000개 IP 회전
+// ============================================================
+const PROXY_URL = process.env.PROXY_URL; // http://user:pass@kr.decodo.com:10001
 
 const usedPorts = new Set();
 function getProxyAgent() {
-  let port;
+  if (!PROXY_URL) return null;
+
+  const url = new URL(PROXY_URL);
+  const basePort = parseInt(url.port) || 10001;
+
+  // 10001 ~ 20000 범위에서 미사용 포트 선택
   if (usedPorts.size > 9000) usedPorts.clear();
-  do { port = 10001 + Math.floor(Math.random() * 10000); } while (usedPorts.has(port));
+  let port;
+  do {
+    port = basePort + Math.floor(Math.random() * 10000);
+  } while (usedPorts.has(port));
   usedPorts.add(port);
-  return new HttpsProxyAgent(`http://${PROXY_USER}:${PROXY_PASS}@${PROXY_HOST}:${port}`);
+  url.port = String(port);
+
+  return new HttpsProxyAgent(url.toString());
 }
 
-const UAs = [
+// User-Agent 풀 (10개)
+const UA_LIST = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0',
-  'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:133.0) Gecko/20100101 Firefox/133.0',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.86 Safari/537.36',
 ];
-function randomUA() { return UAs[Math.floor(Math.random() * UAs.length)]; }
+function randomUA() { return UA_LIST[Math.floor(Math.random() * UA_LIST.length)]; }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// ============ JWT ============
+// ============================================================
+// JWT 인증
+// ============================================================
 function requireLogin(req, res, next) {
   const token = req.cookies.token || req.headers.authorization?.replace('Bearer ', '');
   if (!token) return res.status(401).json({ error: '로그인이 필요합니다.' });
-  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
-  catch (e) { return res.status(401).json({ error: '토큰 만료' }); }
+  try {
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch { return res.status(401).json({ error: '유효하지 않은 토큰입니다.' }); }
 }
 
-// ============ 인증 ============
+// ============================================================
+// 인증 API
+// ============================================================
 app.post('/api/login', (req, res) => {
   const { username, password } = req.body;
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
   if (!user || !bcrypt.compareSync(password, user.password))
     return res.status(401).json({ error: '아이디 또는 비밀번호가 올바르지 않습니다.' });
   const token = jwt.sign({ userId: user.id, username: user.username, isAdmin: user.is_admin }, JWT_SECRET, { expiresIn: '7d' });
-  res.cookie('token', token, { httpOnly: true, maxAge: 7 * 86400000 });
+  res.cookie('token', token, { httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 });
   res.json({ success: true, token, user: { id: user.id, username: user.username, points: user.points, isAdmin: user.is_admin } });
 });
 
-app.post('/api/register', (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password || username.length < 4 || password.length < 4)
-    return res.status(400).json({ error: '아이디와 비밀번호는 4자 이상' });
-  if (db.prepare('SELECT id FROM users WHERE username = ?').get(username))
-    return res.status(400).json({ error: '이미 존재하는 아이디' });
-  db.prepare('INSERT INTO users (username, password, points) VALUES (?, ?, ?)').run(username, bcrypt.hashSync(password, 10), 100);
+app.get('/api/me', requireLogin, (req, res) => {
+  const user = db.prepare('SELECT id, username, points, is_admin as isAdmin FROM users WHERE id = ?').get(req.user.userId);
+  res.json({ user });
+});
+
+app.post('/api/logout', (req, res) => {
+  res.clearCookie('token');
   res.json({ success: true });
 });
 
-app.get('/api/me', requireLogin, (req, res) => {
-  const user = db.prepare('SELECT id, username, points, is_admin FROM users WHERE id = ?').get(req.user.userId);
-  if (!user) return res.status(401).json({ error: '사용자 없음' });
-  res.json({ user: { id: user.id, username: user.username, points: user.points, isAdmin: user.is_admin } });
+// 관리자 API
+app.get('/api/admin/users', requireLogin, (req, res) => {
+  if (!req.user.isAdmin) return res.status(403).json({ error: '권한 없음' });
+  const users = db.prepare('SELECT id, username, points, is_admin, created_at FROM users').all();
+  res.json({ users });
 });
 
-app.post('/api/logout', (req, res) => { res.clearCookie('token'); res.json({ success: true }); });
-
-
-// =====================================================
-//  플레이스 크롤링 (최대 300건) - 프록시 IP 무제한 회전
-// =====================================================
-app.post('/api/extract/place', requireLogin, async (req, res) => {
-  const { keyword, startRank, endRank } = req.body;
-  if (!keyword) return res.status(400).json({ error: '키워드를 입력해주세요.' });
-  const sr = parseInt(startRank) || 1;
-  const er = parseInt(endRank) || 300;
-  const count = er - sr + 1;
-  const user = db.prepare('SELECT points FROM users WHERE id = ?').get(req.user.userId);
-  if (user.points < count) return res.status(400).json({ error: `포인트 부족 (보유: ${user.points}P, 필요: ${count}P)` });
-
-  try {
-    console.log(`\n========== 플레이스: ${keyword} (${sr}~${er}위) ==========`);
-
-    const allPlaceIds = [];
-    const pagesNeeded = Math.ceil(er / 75);
-
-    for (let page = 1; page <= Math.min(pagesNeeded, 5); page++) {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const agent = getProxyAgent();
-          const searchUrl = `https://m.map.naver.com/search2/search.naver?query=${encodeURIComponent(keyword)}&sm=hty&style=v5${page > 1 ? '&page=' + page : ''}`;
-          const searchRes = await axios.get(searchUrl, {
-            httpsAgent: agent, timeout: 20000,
-            headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15', 'Accept': 'text/html', 'Accept-Language': 'ko-KR,ko;q=0.9' }
-          });
-          const html = searchRes.data;
-          const pageIds = [];
-          for (const p of [/place\/([\d]{8,})/gi, /sid[=:][\s"']*([\d]{8,})/gi, /"id"\s*:\s*"?([\d]{8,})"?/gi]) {
-            let m; while ((m = p.exec(html)) !== null) {
-              if (!pageIds.includes(m[1]) && !allPlaceIds.includes(m[1])) pageIds.push(m[1]);
-            }
-          }
-          allPlaceIds.push(...pageIds);
-          console.log(`  페이지 ${page}: ${pageIds.length}개 ID (누적: ${allPlaceIds.length}개)`);
-          if (pageIds.length < 10) break;
-          break;
-        } catch (e) {
-          console.log(`  페이지 ${page} 시도${attempt + 1}: ${e.response?.status || e.message}`);
-          if (attempt < 2) await sleep(1500 + attempt * 1000);
-        }
-      }
-      if (allPlaceIds.length >= er) break;
-      await sleep(600 + Math.random() * 400);
-    }
-
-    if (!allPlaceIds.length) return res.status(400).json({ error: '검색 결과 없음' });
-    console.log(`  총 Place ID: ${allPlaceIds.length}개`);
-
-    const targetIds = allPlaceIds.slice(sr - 1, Math.min(er, allPlaceIds.length));
-    const results = [];
-    const SKIP = ['네이버', 'naver', 'NAVER', '검색', '지도', '플레이스', 'place', 'map'];
-
-    async function fetchPlace(pid, rank, retry = 0) {
-      try {
-        const agent = getProxyAgent();
-        const ua = randomUA();
-        const d = (await axios.get(`https://pcmap.place.naver.com/place/${pid}/home`, {
-          httpsAgent: agent, timeout: 15000,
-          headers: { 'User-Agent': ua, 'Accept': 'text/html,application/xhtml+xml', 'Accept-Language': 'ko-KR,ko;q=0.9', 'Referer': 'https://map.naver.com/' }
-        })).data;
-
-        let name = '', tel = '', address = '', category = '';
-        for (const nm of d.matchAll(/"name"\s*:\s*"([^"]{2,60})"/g)) {
-          const n = nm[1];
-          if (SKIP.some(s => n.toLowerCase().includes(s.toLowerCase())) || n.startsWith('http') || n.startsWith('/')) continue;
-          name = n; break;
-        }
-        const tm = d.match(/"(?:phone|tel|virtualPhone|virtualTel)"\s*:\s*"([0-9\-]+)"/) || d.match(/href="tel:([^"]+)"/);
-        if (tm) tel = tm[1];
-        const am = d.match(/"roadAddress"\s*:\s*"([^"]+)"/) || d.match(/"address"\s*:\s*"([^"]{10,})"/);
-        if (am) address = am[1];
-        const ca = d.match(/"category"\s*:\s*\[([^\]]+)\]/);
-        if (ca) { try { category = JSON.parse('[' + ca[1] + ']').join(' > '); } catch(e) {} }
-        if (!category) { const cm = d.match(/"category"\s*:\s*"([^"]+)"/); if (cm) category = cm[1]; }
-        if (!name) {
-          const og = d.match(/<meta\s+property="og:title"\s+content="([^"]+)"/);
-          if (og) { const t = og[1].replace(/\s*[:·\-|].*/g, '').trim(); if (!SKIP.some(s => t.includes(s))) name = t; }
-        }
-        if (!name && retry < 4) { await sleep(1000 + retry * 800); return fetchPlace(pid, rank, retry + 1); }
-        return { rank, name, tel, address, category, placeId: pid };
-      } catch (e) {
-        if (retry < 5) {
-          if (retry === 0) console.log(`  ${rank}위 ${e.response?.status || '에러'} → 재시도`);
-          await sleep(1500 + retry * 1200);
-          return fetchPlace(pid, rank, retry + 1);
-        }
-        return { rank, name: '', tel: '', address: '', category: '', placeId: pid };
-      }
-    }
-
-    let batchSize = 3;
-    for (let i = 0; i < targetIds.length; i += batchSize) {
-      const batch = targetIds.slice(i, i + batchSize);
-      const br = await Promise.all(batch.map((pid, idx) => fetchPlace(pid, sr + i + idx)));
-      results.push(...br);
-      const fails = br.filter(r => !r.name).length;
-      if (fails > 0 && batchSize > 1) { batchSize = Math.max(1, batchSize - 1); console.log(`  ⚠️ 배치 → ${batchSize}개`); }
-      const done = Math.min(i + batchSize, targetIds.length);
-      if (done % 15 === 0 || done === targetIds.length) console.log(`  진행: ${done}/${targetIds.length} (성공: ${results.filter(r => r.name).length})`);
-      if (i + batchSize < targetIds.length) await sleep(batchSize === 1 ? 1500 + Math.random() * 1500 : 400 + Math.random() * 600);
-    }
-
-    const successResults = results.filter(r => r.name);
-    const used = successResults.length;
-    const newPts = user.points - used;
-    db.prepare('UPDATE users SET points = ? WHERE id = ?').run(newPts, req.user.userId);
-    db.prepare('INSERT INTO point_history (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(
-      req.user.userId, -used, 'use', `플레이스: ${keyword} (성공 ${used}/${results.length}건)`);
-    console.log(`완료: ${results.length}건 중 성공 ${used}건, ${used}P 차감\n`);
-    res.json({ success: true, data: results, usedPoints: used, remainingPoints: newPts });
-  } catch (error) {
-    console.error('플레이스 에러:', error.message);
-    res.status(500).json({ error: '데이터 추출 오류: ' + error.message });
-  }
+app.post('/api/admin/points', requireLogin, (req, res) => {
+  if (!req.user.isAdmin) return res.status(403).json({ error: '권한 없음' });
+  const { userId, amount, description } = req.body;
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  if (!user) return res.status(404).json({ error: '사용자 없음' });
+  const newPts = user.points + amount;
+  if (newPts < 0) return res.status(400).json({ error: '포인트가 부족합니다.' });
+  db.prepare('UPDATE users SET points = ? WHERE id = ?').run(newPts, userId);
+  db.prepare('INSERT INTO point_history (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(
+    userId, amount, amount > 0 ? 'charge' : 'deduct', description || '관리자 조정'
+  );
+  res.json({ success: true, newPoints: newPts });
 });
 
-
-// =====================================================
-//  스마트스토어 크롤링 (최대 500위) - 프록시 IP 무제한 회전
-//  ※ search.shopping.naver.com = 418 차단 (데이터센터 IP 감지)
-//  ※ 대안: search.naver.com 통합검색 쇼핑탭 (where=shp) 활용
-//  3단계 폴백: 통합검색 쇼핑HTML → 모바일 통합검색 → 네이버 검색광고 API
-// =====================================================
-app.post('/api/extract/store', requireLogin, async (req, res) => {
+// ============================================================
+// 쿠팡 크롤링 API - 2단계 (검색결과 + 판매자정보)
+// ============================================================
+app.post('/api/extract/coupang', requireLogin, async (req, res) => {
   const { keyword, startRank, endRank } = req.body;
   if (!keyword) return res.status(400).json({ error: '키워드를 입력해주세요.' });
+
   const sr = parseInt(startRank) || 1;
-  const er = parseInt(endRank) || 500;
+  const er = Math.min(parseInt(endRank) || 50, 100); // 최대 100위
   const count = er - sr + 1;
+
   const user = db.prepare('SELECT points FROM users WHERE id = ?').get(req.user.userId);
-  if (user.points < count) return res.status(400).json({ error: `포인트 부족 (보유: ${user.points}P, 필요: ${count}P)` });
+  if (user.points < count) return res.status(400).json({ error: `포인트 부족 (필요: ${count}P, 보유: ${user.points}P)` });
+
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`쿠팡 크롤링: "${keyword}" (${sr}~${er}위)`);
+  console.log(`${'='.repeat(60)}`);
 
   try {
-    console.log(`\n========== 스마트스토어: ${keyword} (${sr}~${er}위) ==========`);
-    console.log(`  경로: search.naver.com 통합검색 쇼핑탭 (where=shp)`);
-
-    let allProducts = [];
+    const ITEMS_PER_PAGE = 36;
+    const totalPages = Math.ceil(er / ITEMS_PER_PAGE) + 1;
+    const allProducts = [];
     const existingRanks = new Set();
-    const ITEMS_PER_PAGE = 40;  // 네이버 통합검색 쇼핑탭은 페이지당 40개
-    const totalPages = Math.ceil(er / ITEMS_PER_PAGE);
 
-    // ── 워밍업: 네이버 메인 접속 (쿠키 획득) ──
-    let warmupCookies = '';
-    try {
-      const warmAgent = getProxyAgent();
-      const warmRes = await axios.get('https://www.naver.com/', {
-        httpsAgent: warmAgent, timeout: 10000, maxRedirects: 3,
-        headers: {
-          'User-Agent': randomUA(),
-          'Accept': 'text/html,application/xhtml+xml',
-          'Accept-Language': 'ko-KR,ko;q=0.9',
-        }
-      });
-      const setCookies = warmRes.headers['set-cookie'];
-      if (setCookies) {
-        warmupCookies = setCookies.map(c => c.split(';')[0]).join('; ');
-      }
-      console.log(`  ✓ 네이버 메인 접속 (쿠키: ${warmupCookies ? '획득' : '없음'})`);
-    } catch (e) {
-      console.log(`  ⚠ 워밍업 스킵: ${e.message}`);
-    }
-    await sleep(300 + Math.random() * 400);
-
-    for (let page = 1; page <= totalPages; page++) {
-      const startIdx = (page - 1) * ITEMS_PER_PAGE + 1;
-      if (startIdx > er) break;
-
-      let products = [];
+    // ──────────────────────────────────────────
+    // 1단계: 쿠팡 검색결과 크롤링
+    // ──────────────────────────────────────────
+    for (let page = 1; page <= totalPages && allProducts.length < count; page++) {
       let success = false;
+      let retries = 0;
 
-      // ── 공통 헬퍼 함수 (모든 단계에서 사용) ──
-      const isAd = (item) => {
-        if (!item || typeof item !== 'object') return false;
-        if (item.adId || item.adcrUrl || item.isAd === true) return true;
-        if (item.adType || item.adExtraInfo || item.adRank) return true;
-        return false;
-      };
-
-      // HTML 마크업 제거 헬퍼 (\u003Cmark\u003E이어폰\u003C/mark\u003E → 이어폰)
-      const cleanName = (s) => {
-        if (!s) return '';
-        return s
-          .replace(/\\u003C[^>]*\\u003E/gi, '')  // \u003Cmark\u003E 형태
-          .replace(/\\u003C\/[^>]*\\u003E/gi, '') 
-          .replace(/<[^>]*>/g, '')               // <mark> 형태
-          .replace(/\u003C[^>]*\u003E/g, '')     // 디코딩된 형태
-          .trim();
-      };
-
-      const extractProduct = (it) => {
-        if (!it || typeof it !== 'object') return null;
-        const raw = it.item || it;
-        // ★ productName 우선 (통합검색 쇼핑탭 실제 필드)
-        const rawName = raw.productName || raw.productNameOrg || raw.standardProductName ||
-                        raw.productTitle || raw.dispName || raw.name || raw.title || '';
-        const name = cleanName(rawName);
-        if (!name || name.length < 2) return null;
-        if (/^(파워링크|광고|AD|sponsored|프로모션|브랜드검색)/i.test(name)) return null;
-        return {
-          productName: name,
-          storeName: raw.mallName || raw.dispMallName || raw.shopName || raw.seller || '',
-          price: raw.price || raw.lowPrice || raw.salePrice || raw.dispSalePrice || raw.dispDiscountedSalePrice || raw.dispPrice || '',
-          reviewCount: raw.reviewCount || raw.totalReviewCount || raw.reviewCnt || 0,
-          category: raw.category1Name || raw.categoryName || raw.dispCategoryName || raw.category || '',
-          productUrl: raw.mallProductUrl || raw.crUrl || raw.productUrl || raw.link || '',
-          productId: raw.id || raw.nvMid || raw.productId || raw.nid || '',
-          image: raw.imageUrl || raw.thumbnailUrl || raw.image || raw.imgUrl || '',
-          maker: raw.maker || raw.manufacturer || '',
-          brand: raw.brand || raw.brandName || '',
-        };
-      };
-
-      const findShopItems = (obj, depth = 0) => {
-        if (depth > 25 || !obj) return null;
-        if (Array.isArray(obj) && obj.length > 2) {
-          const first = obj[0]?.item || obj[0];
-          if (first && typeof first === 'object') {
-            const hasProductField = first.productName || first.productTitle || first.dispName || 
-              (first.mallName && (first.price || first.lowPrice));
-            if (hasProductField) {
-              const filtered = obj.filter(item => {
-                const raw = item?.item || item;
-                return !isAd(raw) && !isAd(item);
-              });
-              if (filtered.length > 0) return filtered;
-            }
-          }
-        }
-        if (typeof obj === 'object' && !Array.isArray(obj)) {
-          for (const k of Object.keys(obj)) {
-            if (/^(ad|ads|adBanner|sponsored|powerlink)/i.test(k)) continue;
-            const f = findShopItems(obj[k], depth + 1);
-            if (f && f.length > 2) return f;
-          }
-        }
-        return null;
-      };
-
-      // ══════════════════════════════════════════════════
-      // 1차: 네이버 통합검색 쇼핑탭 (search.naver.com?where=shp)
-      //   일반 검색이라 봇 감지가 search.shopping.naver.com보다 약함
-      //   Referer: www.naver.com (네이버 메인에서 검색)
-      // ══════════════════════════════════════════════════
-      for (let attempt = 0; attempt < 3 && !success; attempt++) {
+      while (!success && retries < 3) {
         try {
+          const searchUrl = `https://www.coupang.com/np/search?q=${encodeURIComponent(keyword)}&channel=user&component=&eventCategory=SRP&trcid=&traid=&sorter=scoreDesc&minPrice=&maxPrice=&priceRange=&filterType=&listSize=${ITEMS_PER_PAGE}&filter=&isPriceRange=false&brand=&offerCondition=&rating=0&page=${page}&rocketAll=false&searchIndexingToken=&backgroundColor=`;
+
           const agent = getProxyAgent();
           const ua = randomUA();
-          // 네이버 통합검색 쇼핑탭 - pagingIndex 또는 start 파라미터
-          const shpUrl = `https://search.naver.com/search.naver?where=shp&query=${encodeURIComponent(keyword)}&pagingIndex=${page}&pagingSize=${ITEMS_PER_PAGE}&viewType=list&sort=rel&frm=NVSHSRC`;
-          const sRes = await axios.get(shpUrl, {
-            httpsAgent: agent, timeout: 20000, maxRedirects: 5,
+
+          const sRes = await axios.get(searchUrl, {
+            ...(agent ? { httpsAgent: agent } : {}),
+            timeout: 20000,
             headers: {
               'User-Agent': ua,
-              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-              'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.3',
               'Accept-Encoding': 'gzip, deflate, br',
-              'Referer': page === 1 ? 'https://www.naver.com/' : `https://search.naver.com/search.naver?where=shp&query=${encodeURIComponent(keyword)}`,
-              'Sec-Fetch-Dest': 'document',
-              'Sec-Fetch-Mode': 'navigate',
-              'Sec-Fetch-Site': page === 1 ? 'same-site' : 'same-origin',
-              'Sec-Fetch-User': '?1',
-              'Upgrade-Insecure-Requests': '1',
+              'Referer': page === 1 ? 'https://www.coupang.com/' : `https://www.coupang.com/np/search?q=${encodeURIComponent(keyword)}`,
               'Connection': 'keep-alive',
-              ...(warmupCookies ? { 'Cookie': warmupCookies } : {}),
-            }
+              'Upgrade-Insecure-Requests': '1',
+            },
+            maxRedirects: 5,
           });
-          const html = sRes.data;
-          const htmlLen = typeof html === 'string' ? html.length : 0;
 
-          // ── 통합검색 쇼핑탭 파싱 (광고 제외, 실제 상품만) ──
+          const html = typeof sRes.data === 'string' ? sRes.data : String(sRes.data);
 
-          // 방법 A: script 태그 내 JSON 블록들 전체 스캔
-          const scriptBlocks = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
-          for (const block of scriptBlocks) {
-            if (success) break;
-            const scriptContent = block[1];
-            if (!scriptContent || scriptContent.length < 500) continue;
-            
-            // JSON 객체 패턴 찾기 (다양한 임베딩 방식)
-            const jsonPatterns = [
-              /entry\.bootstrap\s*\([^,]*,\s*(\{[\s\S]*\})\s*\)\s*;?\s*$/,
-              /__NEXT_DATA__[^>]*>\s*(\{[\s\S]*\})\s*$/,
-              /window\.__.*?=\s*(\{[\s\S]*\})\s*;?\s*$/,
-              /data\s*=\s*(\{[\s\S]*\})\s*;?\s*$/,
-            ];
-            
-            for (const pat of jsonPatterns) {
-              if (success) break;
-              const m = scriptContent.match(pat);
-              if (!m) continue;
-              try {
-                const jsonData = JSON.parse(m[1]);
-                const items = findShopItems(jsonData);
-                if (items && items.length > 0) {
-                  products = items.map(extractProduct).filter(Boolean);
-                  if (products.length > 0) {
-                    success = true;
-                    console.log(`  [통합검색JSON] 페이지 ${page}: ${products.length}건 ✓`);
-                  }
-                }
-              } catch (e) { /* JSON 파싱 실패 - 다음 패턴 시도 */ }
-            }
-          }
+          // 파싱: search-product 또는 baby-product
+          const products = [];
+          const itemRegex = /<li[^>]*class="[^"]*(?:search-product|baby-product)\b[^"]*"[^>]*>([\s\S]*?)<\/li>/gi;
+          let itemMatch;
 
-          // 방법 B: 순서 기반 매칭 (productName + mallName + price 각각 전체 추출 후 인덱스 매칭)
-          // 네이버 통합검색은 상품 데이터가 중첩 JSON 구조로 productName과 mallName이 다른 레벨에 있음
-          // 하지만 HTML 내에서 같은 상품의 데이터는 순서가 보장됨
-          if (!success) {
-            const allNames = [...html.matchAll(/"productName"\s*:\s*"([^"]{2,200})"/g)];
-            const allNameOrgs = [...html.matchAll(/"productNameOrg"\s*:\s*"([^"]{2,200})"/g)];
-            const allMalls = [...html.matchAll(/"mallName"\s*:\s*"([^"]{1,100})"/g)];
-            const allPrices = [...html.matchAll(/"(?:price|lowPrice|salePrice)"\s*:\s*"?(\d+)"?/g)];
-            const allCats = [...html.matchAll(/"category(?:1Name|Name)"\s*:\s*"([^"]{1,50})"/g)];
-            const allBrands = [...html.matchAll(/"brand"\s*:\s*"([^"]{1,80})"/g)];
-            const allIds = [...html.matchAll(/"(?:nvMid|id)"\s*:\s*"?(\d{5,20})"?/g)];
-            
-            // ★ URL 관련 필드 전체 스캔
-            const allMallUrls = [...html.matchAll(/"mallProductUrl"\s*:\s*"([^"]{10,500})"/g)];
-            const allCrUrls = [...html.matchAll(/"crUrl"\s*:\s*"([^"]{10,500})"/g)];
-            const allLinks = [...html.matchAll(/"link"\s*:\s*"([^"]{10,500})"/g)];
-            // smartstore URL 직접 스캔
-            const allStoreUrls = [...html.matchAll(/smartstore\.naver\.com\/([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})(?:\/products)?/g)];
-            
-            console.log(`    [매칭분석] names=${allNames.length} malls=${allMalls.length} prices=${allPrices.length} mallUrls=${allMallUrls.length} crUrls=${allCrUrls.length} storeUrls=${allStoreUrls.length}`);
-            
-            // 첫 페이지 첫 시도에서 URL 필드 샘플 출력
-            if (page === 1 && attempt === 0 && allNames.length > 0) {
-              const samplePos = allNames[0].index;
-              const urlCtx = html.substring(Math.max(0, samplePos - 200), Math.min(html.length, samplePos + 3000));
-              // URL 관련 키 전체 스캔
-              const urlKeys = [...urlCtx.matchAll(/"([a-zA-Z]*(?:url|Url|URL|link|Link|href|Href)[a-zA-Z]*)"\s*:\s*"([^"]{5,200})"/gi)];
-              if (urlKeys.length > 0) {
-                console.log(`    [URL필드] 첫 상품 주변 URL키들:`);
-                urlKeys.slice(0, 10).forEach(uk => console.log(`      ${uk[1]}="${uk[2].substring(0, 100)}"`));
-              } else {
-                console.log(`    [URL필드] 첫 상품 주변에 URL 키 없음`);
-              }
-              
-              // ★ 판매자 관련 키 전체 덤프 (검색 결과에 숨어있는 필드 찾기)
-              const bigCtx = html.substring(Math.max(0, samplePos - 500), Math.min(html.length, samplePos + 8000));
-              const sellerKeys = [...bigCtx.matchAll(/"([a-zA-Z]*(?:seller|channel|merchant|vendor|shop|store|tel|phone|ceo|representative|npc|mallNo|mallId|vendorId|channelNo|channelUid|sellerNo)[a-zA-Z]*)"\s*:\s*"?([^",}\]]{1,150})"?/gi)];
-              if (sellerKeys.length > 0) {
-                console.log(`    [판매자필드] 첫 상품 주변 판매자 관련 키들 (${sellerKeys.length}개):`);
-                const seen = new Set();
-                sellerKeys.slice(0, 25).forEach(sk => {
-                  if (!seen.has(sk[1])) { seen.add(sk[1]); console.log(`      ${sk[1]}=${sk[2].substring(0, 80)}`); }
-                });
-              } else {
-                console.log(`    [판매자필드] 판매자 관련 키 없음`);
-              }
-              
-              // ★ 전체 HTML에서 모든 고유 JSON 키 중 seller/channel/tel/phone 패턴
-              const globalKeys = [...html.matchAll(/"([a-zA-Z]{2,40})"\s*:/g)].map(m => m[1]);
-              const uniqueKeys = [...new Set(globalKeys)].filter(k => /seller|channel|merchant|tel|phone|ceo|representative|vendor|npc|mall.*id|mall.*no/i.test(k));
-              if (uniqueKeys.length > 0) {
-                console.log(`    [글로벌키] HTML 전체에서 판매자 관련 키: ${uniqueKeys.join(', ')}`);
-              }
-            }
-            
-            if (allNames.length > 0) {
-              // mallName이 productName보다 많거나 같으면 순서 매칭 가능
-              // 광고 필터: adId 근처(±500바이트)의 productName은 제외
-              const adPositions = [...html.matchAll(/"adId"\s*:/g)].map(m => m.index);
-              
-              let mallIdx = 0;
-              let priceIdx = 0;
-              
-              for (let i = 0; i < allNames.length; i++) {
-                const namePos = allNames[i].index;
-                
-                // 광고 근처인지 확인
-                const isNearAd = adPositions.some(adPos => Math.abs(adPos - namePos) < 800);
-                if (isNearAd) continue;
-                
-                const rawName = allNames[i][1];
-                const pName = cleanName(rawName);
-                if (!pName || pName.length < 2) continue;
-                if (/^(파워링크|광고|AD|sponsored)/i.test(pName)) continue;
-                
-                // 이 productName 다음에 오는 가장 가까운 mallName 찾기
-                let closestMall = '';
-                for (let mi = mallIdx; mi < allMalls.length; mi++) {
-                  if (allMalls[mi].index > namePos) {
-                    closestMall = allMalls[mi][1];
-                    mallIdx = mi + 1;
-                    break;
-                  }
-                }
-                
-                // 가장 가까운 price 찾기
-                let closestPrice = '';
-                for (let pi = priceIdx; pi < allPrices.length; pi++) {
-                  if (allPrices[pi].index > namePos) {
-                    closestPrice = allPrices[pi][1];
-                    priceIdx = pi + 1;
-                    break;
-                  }
-                }
-                
-                // 주변 5000바이트에서 카테고리/브랜드/URL 찾기
-                const wideCtx = html.substring(Math.max(0, namePos - 500), Math.min(html.length, namePos + 5000));
-                const catM = wideCtx.match(/"category(?:1Name|Name)"\s*:\s*"([^"]{1,50})"/);
-                const brandM = wideCtx.match(/"brand"\s*:\s*"([^"]{1,80})"/);
-                const idM = wideCtx.match(/"nvMid"\s*:\s*"?(\d{5,20})"?/);
-                const imgM = wideCtx.match(/"imageUrl"\s*:\s*"([^"]{10,500})"/);
-                const reviewM = wideCtx.match(/"reviewCount"\s*:\s*"?(\d+)"?/);
-                // ★ pcUrl 우선 (통합검색 실제 필드명, \u002F 이스케이프)
-                const pcUrlM = wideCtx.match(/"pcUrl"\s*:\s*"([^"]{10,500})"/);
-                const urlM = wideCtx.match(/"mallProductUrl"\s*:\s*"([^"]{10,500})"/);
-                const crUrlM = wideCtx.match(/"crUrl"\s*:\s*"([^"]{10,500})"/);
-                const linkM = wideCtx.match(/"link"\s*:\s*"([^"]{10,500})"/);
-                // \u002F → / 디코딩
-                const dUrl = (u) => u ? u.replace(/\\u002F/g, '/').replace(/\\u003A/g, ':') : '';
-                const extractedUrl = dUrl(pcUrlM?.[1] || urlM?.[1] || crUrlM?.[1] || linkM?.[1] || '');
-                // slug 추출 (디코딩된 URL에서, 또는 outlink URL에서)
-                let extractedSlug = '';
-                if (extractedUrl) {
-                  // outlink URL 패턴: url=https%3A%2F%2Fsmartstore.naver.com%2F{slug}
-                  const outlinkM = extractedUrl.match(/url=https?%3A%2F%2F(?:m\.)?smartstore\.naver\.com%2F([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})/);
-                  if (outlinkM && outlinkM[1] !== 'main' && outlinkM[1] !== 'inflow') {
-                    extractedSlug = outlinkM[1];
-                  }
-                  if (!extractedSlug) {
-                    const directM = extractedUrl.match(/smartstore\.naver\.com\/([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})/);
-                    if (directM && directM[1] !== 'main' && directM[1] !== 'inflow') {
-                      extractedSlug = directM[1];
-                    }
-                  }
-                }
-                // 폴백: wideCtx 전체에서 outlink URL 패턴 스캔
-                if (!extractedSlug) {
-                  const decodedCtx = dUrl(wideCtx);
-                  const outlinkCtx = decodedCtx.match(/url=https?%3A%2F%2F(?:m\.)?smartstore\.naver\.com%2F([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})/);
-                  if (outlinkCtx && outlinkCtx[1] !== 'main' && outlinkCtx[1] !== 'inflow') {
-                    extractedSlug = outlinkCtx[1];
-                  }
-                  if (!extractedSlug) {
-                    const anySlug = decodedCtx.match(/smartstore\.naver\.com\/([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})(?:\/|"|$)/);
-                    if (anySlug && anySlug[1] !== 'main' && anySlug[1] !== 'inflow' && anySlug[1] !== 'products') {
-                      extractedSlug = anySlug[1];
-                    }
-                  }
-                }
-                
-                products.push({
-                  productName: pName,
-                  storeName: closestMall,
-                  price: closestPrice,
-                  reviewCount: reviewM ? parseInt(reviewM[1]) : 0,
-                  category: catM?.[1] || '',
-                  productUrl: extractedUrl,
-                  productId: idM?.[1] || '',
-                  image: imgM?.[1]?.replace(/\\u002F/g, '/') || '',
-                  maker: '',
-                  brand: brandM?.[1] || '',
-                  sellerTel: '', sellerCeo: '',
-                  storeSlug: extractedSlug,
-                });
-              }
-              
-              if (products.length > 0) {
-                success = true;
-                console.log(`  [통합검색순서매칭] 페이지 ${page}: ${products.length}건 ✓ (names=${allNames.length} malls=${allMalls.length})`);
-              }
-            }
-          }
+          while ((itemMatch = itemRegex.exec(html)) !== null) {
+            const itemHtml = itemMatch[0];
 
-          // 방법 C: productNameOrg 폴백 (productName이 없는 경우)
-          if (!success) {
-            const orgNames = [...html.matchAll(/"productNameOrg"\s*:\s*"([^"]{2,200})"/g)];
-            const orgMalls = [...html.matchAll(/"mallName"\s*:\s*"([^"]{1,100})"/g)];
-            const orgPrices = [...html.matchAll(/"(?:price|lowPrice)"\s*:\s*"?(\d+)"?/g)];
-            if (orgNames.length > 0) {
-              for (let j = 0; j < orgNames.length; j++) {
-                const pName = cleanName(orgNames[j]?.[1]);
-                if (!pName || pName.length < 2) continue;
-                products.push({
-                  productName: pName, storeName: orgMalls[j]?.[1] || '',
-                  price: orgPrices[j]?.[1] || '', reviewCount: 0, category: '',
-                  productUrl: '', productId: '', image: '', maker: '', brand: '',
-                });
-              }
-              if (products.length > 0) {
-                success = true;
-                console.log(`  [통합검색NameOrg] 페이지 ${page}: ${products.length}건 ✓`);
-              }
-            }
-          }
+            // 광고 제외
+            if (itemHtml.includes('ad-badge') || itemHtml.includes('__ad') || itemHtml.includes('sponsored')) continue;
 
-          if (!success) {
-            console.log(`  [통합검색] 페이지 ${page} 시도${attempt + 1}: 200 but no data (html: ${htmlLen}bytes)`);
-            // 디버그: HTML에 어떤 키워드가 있는지 확인
-            const hasProductTitle = html.includes('productTitle');
-            const hasDispName = html.includes('dispName');
-            const hasMallName = html.includes('mallName');
-            const hasShoppingSection = html.includes('shp_') || html.includes('_shopping_');
-            const hasAdId = html.includes('adId');
-            console.log(`    디버그: productTitle=${hasProductTitle} dispName=${hasDispName} mallName=${hasMallName} shopping=${hasShoppingSection} adId=${hasAdId}`);
-            
-            // 페이지 1, 시도 1일 때만 상세 디버그 (mallName 주변 컨텍스트)
-            if (page === 1 && attempt === 0) {
-              // mallName 주변 500바이트 샘플 (최대 3개)
-              const mallIdx = html.indexOf('"mallName"');
-              if (mallIdx > -1) {
-                const sample = html.substring(Math.max(0, mallIdx - 200), Math.min(html.length, mallIdx + 300));
-                console.log(`    [샘플] mallName 주변: ${sample.substring(0, 400)}`);
-              }
-              // "name" 또는 "title" 포함된 JSON 키 전체 스캔
-              const keyPatterns = [...html.matchAll(/"([a-zA-Z]*(?:name|title|Name|Title)[a-zA-Z]*)"\s*:\s*"([^"]{5,80})"/g)];
-              const uniqueKeys = new Map();
-              for (const m of keyPatterns) {
-                if (!uniqueKeys.has(m[1]) && uniqueKeys.size < 20) {
-                  uniqueKeys.set(m[1], m[2].substring(0, 50));
-                }
-              }
-              if (uniqueKeys.size > 0) {
-                console.log(`    [필드목록] ${[...uniqueKeys.entries()].map(([k,v]) => `${k}="${v}"`).join(' | ')}`);
-              }
-              // script 태그 내 JSON 크기 분석
-              const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
-              const bigScripts = scripts.filter(s => s[1].length > 10000).map(s => s[1].length);
-              console.log(`    [스크립트] 총 ${scripts.length}개, 10KB+: ${bigScripts.length}개 (크기: ${bigScripts.slice(0,5).join(', ')})`);
-            }
-          }
-        } catch (e) {
-          console.log(`  [통합검색] 페이지 ${page} 시도${attempt + 1}: ${e.response?.status || e.message}`);
-          await sleep(1500 + attempt * 1500);
-        }
-      }
+            // 상품명
+            const nameM = itemHtml.match(/class="name"[^>]*>([^<]+)/) || itemHtml.match(/class="[^"]*name[^"]*"[^>]*>([^<]{3,200})/);
+            if (!nameM) continue;
+            const productName = nameM[1].trim();
 
-      // ══════════════════════════════════════════════════
-      // 2차: 모바일 통합검색 쇼핑 (m.search.naver.com)
-      //   모바일은 봇 감지가 더 약함
-      // ══════════════════════════════════════════════════
-      if (!success) {
-        for (let attempt = 0; attempt < 2 && !success; attempt++) {
-          try {
-            const agent = getProxyAgent();
-            const mUrl = `https://m.search.naver.com/search.naver?where=shm_shp&query=${encodeURIComponent(keyword)}&start=${startIdx}&display=${ITEMS_PER_PAGE}`;
-            const mRes = await axios.get(mUrl, {
-              httpsAgent: agent, timeout: 20000, maxRedirects: 5,
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-                'Accept': 'text/html,application/xhtml+xml',
-                'Accept-Language': 'ko-KR,ko;q=0.9',
-                'Referer': 'https://m.naver.com/',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-              }
+            // 가격
+            const priceM = itemHtml.match(/class="price-value"[^>]*>([^<]+)/) || itemHtml.match(/class="[^"]*price[^"]*"[^>]*>([0-9,]+)/);
+            const price = priceM ? priceM[1].replace(/[^0-9]/g, '') : '';
+
+            // 할인 전 가격
+            const basePriceM = itemHtml.match(/class="base-price"[^>]*>([^<]+)/);
+            const basePrice = basePriceM ? basePriceM[1].replace(/[^0-9]/g, '') : '';
+
+            // 할인율
+            const discountM = itemHtml.match(/class="[^"]*discount[^"]*"[^>]*>([^<]+)/);
+            const discount = discountM ? discountM[1].trim() : '';
+
+            // 별점
+            const ratingM = itemHtml.match(/class="rating"[^>]*>([^<]+)/);
+            const rating = ratingM ? ratingM[1].trim() : '';
+
+            // 리뷰수
+            const reviewM = itemHtml.match(/class="rating-total-count"[^>]*>\(?([^)<]+)\)?/);
+            const reviewCount = reviewM ? parseInt(reviewM[1].replace(/[^0-9]/g, '')) || 0 : 0;
+
+            // 상품 URL
+            const urlM = itemHtml.match(/href="(\/vp\/products\/[^"]+)"/) || itemHtml.match(/href="(\/np\/[^"]+)"/);
+            const productUrl = urlM ? 'https://www.coupang.com' + urlM[1] : '';
+
+            // ID 추출
+            const pidM = productUrl.match(/products\/(\d+)/);
+            const vidM = productUrl.match(/vendorItemId=(\d+)/);
+            const iidM = productUrl.match(/itemId=(\d+)/);
+
+            // 이미지
+            const imgM = itemHtml.match(/data-img-src="(https?:\/\/[^"]+)"/) || itemHtml.match(/src="(https?:\/\/[^"]*(?:coupangcdn|thumbnail)[^"]+)"/);
+            const image = imgM ? imgM[1] : '';
+
+            // 로켓배송
+            const isRocket = /rocket|로켓/.test(itemHtml);
+
+            products.push({
+              productName, price, basePrice, discount, rating, reviewCount,
+              productUrl, productId: pidM?.[1] || '', vendorItemId: vidM?.[1] || '', itemId: iidM?.[1] || '',
+              image, isRocket,
+              sellerName: '', sellerTel: '', sellerCeo: '', bizNo: '',
             });
-            const mHtml = mRes.data;
-
-            // 모바일 통합검색 파싱 - 순서 기반 매칭 (PC와 동일)
-            const mNames = [...mHtml.matchAll(/"productName"\s*:\s*"([^"]{2,200})"/g)];
-            const mMalls = [...mHtml.matchAll(/"mallName"\s*:\s*"([^"]{1,100})"/g)];
-            const mPrices = [...mHtml.matchAll(/"(?:price|lowPrice|salePrice)"\s*:\s*"?(\d+)"?/g)];
-            
-            if (mNames.length > 0) {
-              const mAdPos = [...mHtml.matchAll(/"adId"\s*:/g)].map(m => m.index);
-              let mMallIdx = 0, mPriceIdx = 0;
-              
-              for (let i = 0; i < mNames.length; i++) {
-                const namePos = mNames[i].index;
-                const isNearAd = mAdPos.some(ap => Math.abs(ap - namePos) < 800);
-                if (isNearAd) continue;
-                const pName = cleanName(mNames[i][1]);
-                if (!pName || pName.length < 2) continue;
-                if (/^(파워링크|광고|AD|sponsored)/i.test(pName)) continue;
-                
-                let mall = '';
-                for (let mi = mMallIdx; mi < mMalls.length; mi++) {
-                  if (mMalls[mi].index > namePos) { mall = mMalls[mi][1]; mMallIdx = mi + 1; break; }
-                }
-                let price = '';
-                for (let pi = mPriceIdx; pi < mPrices.length; pi++) {
-                  if (mPrices[pi].index > namePos) { price = mPrices[pi][1]; mPriceIdx = pi + 1; break; }
-                }
-                
-                products.push({
-                  productName: pName, storeName: mall, price: price,
-                  reviewCount: 0, category: '', productUrl: '', productId: '',
-                  image: '', maker: '', brand: '',
-                });
-              }
-              if (products.length > 0) {
-                success = true;
-                console.log(`  [모바일순서매칭] 페이지 ${page}: ${products.length}건 ✓`);
-              }
-            }
-
-            // JSON 재귀 탐색 폴백
-            if (!success) {
-              const scriptBlks = [...mHtml.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
-              for (const blk of scriptBlks) {
-                if (success) break;
-                const sc = blk[1];
-                if (!sc || sc.length < 500) continue;
-                const jsonPats = [
-                  /entry\.bootstrap\s*\([^,]*,\s*(\{[\s\S]*\})\s*\)\s*;?\s*$/,
-                  /window\.__.*?=\s*(\{[\s\S]*\})\s*;?\s*$/,
-                ];
-                for (const p of jsonPats) {
-                  const mm = sc.match(p);
-                  if (!mm) continue;
-                  try {
-                    const jd = JSON.parse(mm[1]);
-                    const items = findShopItems(jd);
-                    if (items && items.length > 0) {
-                      products = items.map(extractProduct).filter(Boolean);
-                      if (products.length > 0) {
-                        success = true;
-                        console.log(`  [모바일JSON] 페이지 ${page}: ${products.length}건 ✓`);
-                        break;
-                      }
-                    }
-                  } catch (e) {}
-                }
-              }
-            }
-
-            if (!success) console.log(`  [모바일통합] 페이지 ${page} 시도${attempt + 1}: no data (${mHtml.length}bytes)`);
-          } catch (e) {
-            console.log(`  [모바일통합] 페이지 ${page} 시도${attempt + 1}: ${e.response?.status || e.message}`);
-            await sleep(2000 + attempt * 2000);
           }
-        }
-      }
 
-      // ══════════════════════════════════════════════════
-      // 3차: 네이버 쇼핑 모바일 (msearch.shopping.naver.com)
-      //   마지막 시도 - 모바일 쇼핑
-      // ══════════════════════════════════════════════════
-      if (!success) {
-        try {
-          const agent = getProxyAgent();
-          const msUrl = `https://msearch.shopping.naver.com/search/all?query=${encodeURIComponent(keyword)}&pagingIndex=${page}&sort=rel`;
-          const msRes = await axios.get(msUrl, {
-            httpsAgent: agent, timeout: 20000,
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-              'Accept': 'text/html', 'Accept-Language': 'ko-KR,ko;q=0.9',
-              'Referer': 'https://m.shopping.naver.com/',
-            }
-          });
-          const msHtml = msRes.data;
-          const msTitles = [...msHtml.matchAll(/"(?:productName|productTitle)"\s*:\s*"([^"]{2,200})"/g)];
-          const msMalls = [...msHtml.matchAll(/"mallName"\s*:\s*"([^"]{1,100})"/g)];
-          const msPrices = [...msHtml.matchAll(/"(?:price|lowPrice)"\s*:\s*"?(\d+)"?/g)];
-          if (msTitles.length > 0) {
-            for (let j = 0; j < msTitles.length; j++) {
-              const pn = cleanName(msTitles[j]?.[1] || '');
-              if (!pn || pn.length < 2) continue;
-              products.push({
-                productName: pn, storeName: msMalls[j]?.[1] || '',
-                price: msPrices[j]?.[1] || '', reviewCount: 0, category: '',
-                productUrl: '', productId: '', image: '', maker: '', brand: '',
-              });
-            }
+          if (products.length > 0) {
             success = true;
-            console.log(`  [모바일쇼핑] 페이지 ${page}: ${products.length}건 ✓`);
+            console.log(`  [검색] 페이지 ${page}: ${products.length}건`);
+
+            for (let j = 0; j < products.length && allProducts.length < count; j++) {
+              const globalRank = (page - 1) * ITEMS_PER_PAGE + j + 1;
+              if (globalRank < sr || globalRank > er || existingRanks.has(globalRank)) continue;
+              existingRanks.add(globalRank);
+              allProducts.push({ rank: globalRank, ...products[j] });
+            }
           } else {
-            console.log(`  ✗ 페이지 ${page}: 전체 실패`);
+            // 디버그: 파싱 실패
+            console.log(`  [디버그] 페이지 ${page}: 0건 (HTML ${html.length}자)`);
+
+            // li 클래스 패턴
+            const liClasses = [...html.matchAll(/<li[^>]*class="([^"]*)"[^>]*>/g)]
+              .map(m => m[1]).filter(c => c.includes('product') || c.includes('baby'));
+            if (liClasses.length) console.log(`  [디버그] li classes: ${[...new Set(liClasses)].slice(0, 5).join(', ')}`);
+
+            // 상품명 패턴
+            const namePatterns = [...html.matchAll(/class="([^"]*name[^"]*)"[^>]*>([^<]{5,80})/g)];
+            if (namePatterns.length) console.log(`  [디버그] name 패턴: ${namePatterns.slice(0, 3).map(m => m[1]).join(', ')}`);
+
+            // CAPTCHA 감지
+            if (html.includes('CAPTCHA') || html.includes('보안문자') || html.includes('captcha')) {
+              console.log(`  [차단] CAPTCHA 감지!`);
+            }
+
+            retries++;
+            if (retries < 3) {
+              console.log(`  → 재시도 ${retries}/3`);
+              await sleep(2000);
+            } else {
+              success = true; // 3회 실패 → 다음 페이지로
+            }
           }
         } catch (e) {
-          console.log(`  ✗ 페이지 ${page}: 최종 실패 (${e.response?.status || e.message})`);
+          console.log(`  [오류] 페이지 ${page}: ${e.message}`);
+          retries++;
+          if (retries < 3) await sleep(2000);
+          else success = true;
         }
       }
 
-      // ── 순위 매핑 & 중복 방지 ──
-      for (let j = 0; j < products.length; j++) {
-        const globalRank = (page - 1) * ITEMS_PER_PAGE + j + 1;
-        if (globalRank < sr || globalRank > er || existingRanks.has(globalRank)) continue;
-        allProducts.push({ rank: globalRank, ...products[j] });
-        existingRanks.add(globalRank);
-      }
-      if (allProducts.length >= count) break;
       // 페이지 간 딜레이
-      await sleep(800 + Math.random() * 800);
+      if (page < totalPages) await sleep(1000 + Math.random() * 1000);
     }
 
-    allProducts.sort((a, b) => a.rank - b.rank);
+    console.log(`\n[1단계 완료] 검색결과 ${allProducts.length}건 수집`);
 
-    // ══════════════════════════════════════════════════
-    // 2단계: 판매자 정보 크롤링 (전화번호, 대표자명)
-    // 각 상품의 스토어 페이지에서 판매자 정보 추출
-    // ══════════════════════════════════════════════════
-    console.log(`\n[2단계] 판매자 정보 크롤링 시작 (${allProducts.length}건)`);
-    console.log(`  ※ 검색 HTML 분석 모드 - 위의 [판매자필드] [글로벌키] 로그를 확인하세요`);
-    
-    // 스토어별로 중복 제거 (같은 스토어는 한 번만 조회)
-    const storeInfoCache = {};
-    
-    // ★ 검색 HTML에서 이미 추출한 slug로 seller-info API를 search.naver.com 경유로 시도
-    // (search.naver.com은 차단이 약하므로, 스토어 slug를 검색어로 넣어 사업자정보 찾기)
-    
-    const fetchSellerInfo = async (product, idx) => {
-      const { storeName, productUrl, productId, storeSlug: preSlug } = product;
-      
-      // 캐시 확인 (같은 스토어는 재조회 안함)
-      if (storeName && storeInfoCache[storeName]) {
-        return storeInfoCache[storeName];
-      }
-      
-      const result = { sellerTel: '', sellerCeo: '' };
-      
-      try {
-        let storeSlug = preSlug || '';
-        
-        // productUrl에서 slug 추출
-        if (!storeSlug && productUrl) {
-          const slugM = productUrl.match(/smartstore\.naver\.com\/([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})/);
-          if (slugM && slugM[1] !== 'main' && slugM[1] !== 'inflow') storeSlug = slugM[1];
-        }
-        
-        if (idx < 5) console.log(`    [디버그#${idx}] slug="${storeSlug}" productId="${productId}"`);
-        
-        // ── 방법 A: 네이버 쇼핑 상품 API (channelUid 확보) ──
-        // shopping.naver.com의 상품 상세 API - 차단이 상대적으로 약함
-        let channelUid = '';
-        if (productId) {
-          try {
-            const agent = getProxyAgent();
-            const apiUrl = `https://shopping.naver.com/shopv/v1/product/${productId}/channel`;
-            const aRes = await axios.get(apiUrl, {
-              httpsAgent: agent, timeout: 12000,
-              headers: { 
-                'User-Agent': randomUA(), 
-                'Accept': 'application/json',
-                'Referer': 'https://shopping.naver.com/',
-                'Accept-Language': 'ko-KR,ko;q=0.9',
-              }
-            });
-            const d = aRes.data;
-            if (idx < 5) console.log(`    [디버그#${idx}] 쇼핑API: ${aRes.status} keys=${Object.keys(d||{}).slice(0,8)}`);
-            if (d) {
-              channelUid = d.channelUid || d.channel?.uid || '';
-              if (!storeSlug) storeSlug = d.url || d.channel?.url || '';
-              // 직접 판매자 정보가 있을 수 있음
-              const si = d.sellerInfo || d.seller || d.channelInfo || {};
-              if (si.tel || si.csPhoneNumber) result.sellerTel = si.tel || si.csPhoneNumber || '';
-              if (si.representative || si.ceoName) result.sellerCeo = si.representative || si.ceoName || '';
-            }
-          } catch (e) {
-            if (idx < 5) console.log(`    [디버그#${idx}] 쇼핑API: ${e.response?.status || e.message}`);
-          }
-        }
-        
-        // ── 방법 B: 네이버 쇼핑 상품 상세 페이지 (모바일) ──
-        if (!result.sellerTel && productId) {
-          try {
-            const agent = getProxyAgent();
-            const mUrl = `https://msearch.shopping.naver.com/product/${productId}`;
-            const mRes = await axios.get(mUrl, {
-              httpsAgent: agent, timeout: 12000, maxRedirects: 5,
-              headers: { 
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-                'Accept': 'text/html,application/xhtml+xml',
-                'Accept-Language': 'ko-KR,ko;q=0.9',
-                'Referer': 'https://msearch.shopping.naver.com/',
-              }
-            });
-            const mHtml = mRes.data || '';
-            if (idx < 5) console.log(`    [디버그#${idx}] 모바일쇼핑: ${mRes.status} ${mHtml.length}bytes`);
-            
-            // channelUid 추출
-            if (!channelUid) {
-              const uidM = mHtml.match(/"channelUid"\s*:\s*"([a-zA-Z0-9_-]+)"/);
-              if (uidM) channelUid = uidM[1];
-            }
-            // slug 추출  
-            if (!storeSlug || storeSlug === 'main' || storeSlug === 'inflow') {
-              const sM = mHtml.match(/smartstore\.naver\.com\/([a-zA-Z0-9][a-zA-Z0-9_-]{1,50})(?:\/|")/);
-              if (sM && sM[1] !== 'main' && sM[1] !== 'inflow') storeSlug = sM[1];
-            }
-            // 전화번호/대표자 직접 추출
-            const telM = mHtml.match(/"(?:tel|phoneNumber|csPhoneNumber|customerCenterTel|representTelNo)"\s*:\s*"([0-9][0-9\-]{5,20})"/);
-            const ceoM = mHtml.match(/"(?:representative|representativeName|ceoName|ownerName)"\s*:\s*"([^"]{1,50})"/);
-            if (telM) result.sellerTel = telM[1];
-            if (ceoM) result.sellerCeo = ceoM[1];
-            if (idx < 5) console.log(`    [디버그#${idx}] 모바일직접: tel="${result.sellerTel}" ceo="${result.sellerCeo}" uid=${channelUid}`);
-          } catch (e) {
-            if (idx < 5) console.log(`    [디버그#${idx}] 모바일쇼핑실패: ${e.response?.status || e.message}`);
-          }
-        }
-        
-        // ── 방법 C: brand.naver.com API (channelUid 있을 때) ──
-        if (!result.sellerTel && channelUid) {
-          try {
-            const agent = getProxyAgent();
-            const bUrl = `https://brand.naver.com/n/v2/channels/${channelUid}?withWindow=false`;
-            const bRes = await axios.get(bUrl, {
-              httpsAgent: agent, timeout: 12000,
-              headers: {
-                'User-Agent': randomUA(),
-                'Accept': 'application/json',
-                'Referer': 'https://brand.naver.com/',
-              }
-            });
-            const bd = bRes.data;
-            if (idx < 5) console.log(`    [디버그#${idx}] brandAPI: ${bRes.status} keys=${Object.keys(bd||{}).slice(0,8)}`);
-            if (bd) {
-              const si = bd.sellerInfo || bd.businessInfo || bd.channelInfo || bd;
-              result.sellerTel = si.tel || si.phone || si.csPhoneNumber || si.customerCenterTel || si.representTelNo || result.sellerTel;
-              result.sellerCeo = si.representative || si.representativeName || si.ceoName || si.ownerName || result.sellerCeo;
-            }
-          } catch (e) {
-            if (idx < 5) console.log(`    [디버그#${idx}] brandAPI: ${e.response?.status || e.message}`);
-          }
-        }
-        
-        // ── 방법 D: 스토어 메인 페이지 접속 (slug 있을 때, 마지막 수단) ──
-        if (!result.sellerTel && storeSlug && storeSlug !== 'main' && storeSlug !== 'inflow') {
-          // 딜레이를 길게 줘서 429 방지
-          await sleep(1500 + Math.random() * 1000);
-          try {
-            const agent = getProxyAgent();
-            const storeUrl = `https://m.smartstore.naver.com/${storeSlug}`;
-            const sRes = await axios.get(storeUrl, {
-              httpsAgent: agent, timeout: 15000, maxRedirects: 5,
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-                'Accept': 'text/html,application/xhtml+xml',
-                'Accept-Language': 'ko-KR,ko;q=0.9',
-                'Referer': 'https://m.search.naver.com/',
-              }
-            });
-            const sHtml = sRes.data || '';
-            if (idx < 5) console.log(`    [디버그#${idx}] 모바일스토어: ${sRes.status} ${sHtml.length}bytes`);
-            
-            const telM = sHtml.match(/"(?:tel|phoneNumber|csPhoneNumber|customerCenterTel|representTelNo)"\s*:\s*"([0-9][0-9\-]{5,20})"/);
-            const ceoM = sHtml.match(/"(?:representative|representativeName|ceoName|ownerName)"\s*:\s*"([^"]{1,50})"/);
-            if (telM) result.sellerTel = telM[1];
-            if (ceoM) result.sellerCeo = ceoM[1];
-            
-            // channelNo로 seller-info API
-            if (!result.sellerTel) {
-              const chNoM = sHtml.match(/"channelNo"\s*:\s*"?(\d+)"?/);
-              const uidM2 = sHtml.match(/"channelUid"\s*:\s*"([a-zA-Z0-9_-]+)"/);
-              if (idx < 5) console.log(`    [디버그#${idx}] chNo=${chNoM?.[1]||'X'} uid=${uidM2?.[1]||'X'}`);
-              
-              const chId = chNoM?.[1] || uidM2?.[1];
-              if (chId) {
-                try {
-                  const agent2 = getProxyAgent();
-                  const infoUrl = `https://smartstore.naver.com/i/v1/stores/${chId}/seller-info`;
-                  const iRes = await axios.get(infoUrl, {
-                    httpsAgent: agent2, timeout: 10000,
-                    headers: { 'User-Agent': randomUA(), 'Accept': 'application/json', 'Referer': `https://smartstore.naver.com/${storeSlug}` }
-                  });
-                  const info = iRes.data;
-                  if (idx < 5) console.log(`    [디버그#${idx}] sellerAPI: ${iRes.status} keys=${Object.keys(info||{}).slice(0,10)}`);
-                  if (info) {
-                    result.sellerTel = info.tel || info.phone || info.csPhoneNumber || info.representTelNo || '';
-                    result.sellerCeo = info.representative || info.representativeName || info.ceoName || info.ownerName || '';
-                  }
-                } catch (e2) {
-                  if (idx < 5) console.log(`    [디버그#${idx}] sellerAPI실패: ${e2.response?.status || e2.message}`);
-                }
-              }
-              
-              // 마지막: HTML 전체에서 전화번호 패턴 직접 스캔
-              if (!result.sellerTel && idx < 5) {
-                const anyTel = [...sHtml.matchAll(/"([^"]*(?:tel|phone|Tel|Phone)[^"]*)"\s*:\s*"([0-9][0-9\-]{5,20})"/g)];
-                const anyCeo = [...sHtml.matchAll(/"([^"]*(?:representative|ceo|owner|CEO|Owner|Representative)[^"]*)"\s*:\s*"([^"]{1,50})"/gi)];
-                console.log(`    [디버그#${idx}] HTML스캔: tel키=${anyTel.length} ceo키=${anyCeo.length}`);
-                anyTel.slice(0, 5).forEach(t => console.log(`      ${t[1]}="${t[2]}"`));
-                anyCeo.slice(0, 5).forEach(c => console.log(`      ${c[1]}="${c[2]}"`));
-              }
-            }
-          } catch (e) {
-            if (idx < 5) console.log(`    [디버그#${idx}] 스토어접속실패: ${e.response?.status || e.message}`);
-          }
-        }
-        
-        if (idx < 5) console.log(`    [디버그#${idx}] ★최종: tel="${result.sellerTel}" ceo="${result.sellerCeo}"`);
-        
-      } catch (e) {
-        if (idx < 5) console.log(`    [디버그#${idx}] 전체실패: ${e.message}`);
-      }
-      
-      if (storeName) storeInfoCache[storeName] = result;
-      return result;
-    };
-    
-    // ★ 순차 처리 (429 방지 - 1건씩 + 딜레이)
+    if (allProducts.length === 0) {
+      return res.status(400).json({ error: '검색 결과를 파싱할 수 없습니다. 키워드를 확인해주세요.' });
+    }
+
+    // ──────────────────────────────────────────
+    // 2단계: 판매자 상세정보 크롤링
+    // ──────────────────────────────────────────
+    console.log(`\n[2단계] 판매자 정보 수집 시작: ${allProducts.length}건`);
+    const sellerCache = {};
+
     for (let i = 0; i < allProducts.length; i++) {
-      const info = await fetchSellerInfo(allProducts[i], i);
-      allProducts[i].sellerTel = info.sellerTel;
-      allProducts[i].sellerCeo = info.sellerCeo;
-      
-      // 캐시 히트가 아니면 딜레이
-      if (!storeInfoCache[allProducts[i].storeName + '_cached']) {
-        await sleep(800 + Math.random() * 700);
+      const p = allProducts[i];
+      if (!p.productUrl) continue;
+
+      try {
+        const pAgent = getProxyAgent();
+        const pRes = await axios.get(p.productUrl, {
+          ...(pAgent ? { httpsAgent: pAgent } : {}),
+          timeout: 15000,
+          headers: {
+            'User-Agent': randomUA(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'ko-KR,ko;q=0.9',
+            'Referer': `https://www.coupang.com/np/search?q=${encodeURIComponent(keyword)}`,
+            'Connection': 'keep-alive',
+          },
+          maxRedirects: 5,
+        });
+
+        const pHtml = typeof pRes.data === 'string' ? pRes.data : String(pRes.data);
+
+        // 판매업체명 (다중 패턴)
+        const sellerPatterns = [
+          /class="[^"]*prod-vendor-name[^"]*"[^>]*>([^<]+)/,
+          /판매업체[^<]*<[^>]*>([^<]+)/,
+          /"vendorName"\s*:\s*"([^"]+)"/,
+          /data-vendor-name="([^"]+)"/,
+          /class="[^"]*vendor[^"]*"[^>]*>([^<]{2,50})/,
+          /"sellerName"\s*:\s*"([^"]+)"/,
+        ];
+        for (const pat of sellerPatterns) {
+          const m = pHtml.match(pat);
+          if (m && m[1] && m[1].trim().length >= 2) { p.sellerName = m[1].trim(); break; }
+        }
+
+        // 캐시 확인
+        if (p.sellerName && sellerCache[p.sellerName]) {
+          const c = sellerCache[p.sellerName];
+          p.sellerTel = c.sellerTel;
+          p.sellerCeo = c.sellerCeo;
+          p.bizNo = c.bizNo;
+        } else {
+          // 전화번호
+          const telPatterns = [
+            /(?:전화번호|연락처|고객센터)\s*[:：]?\s*([\d]{2,4}[-\s]?[\d]{3,4}[-\s]?[\d]{4})/,
+            /"(?:tel|phoneNumber|csPhoneNumber|phone)"\s*:\s*"([\d][\d\-]{5,20})"/,
+            /(?:cellNo|telNo|contactNumber)["']?\s*[:=]\s*["']?([\d][\d\-]{5,20})/,
+          ];
+          for (const pat of telPatterns) {
+            const m = pHtml.match(pat);
+            if (m && m[1]) { p.sellerTel = m[1].trim(); break; }
+          }
+
+          // 대표자
+          const ceoPatterns = [
+            /(?:대표자|대표이사|성명)\s*[:：]?\s*([가-힣]{2,5})/,
+            /"(?:representative|ceoName|representativeName)"\s*:\s*"([^"]{1,50})"/,
+          ];
+          for (const pat of ceoPatterns) {
+            const m = pHtml.match(pat);
+            if (m && m[1]) { p.sellerCeo = m[1].trim(); break; }
+          }
+
+          // 사업자등록번호
+          const bizPatterns = [
+            /(?:사업자등록번호|사업자번호)\s*[:：]?\s*(\d{3}-\d{2}-\d{5})/,
+            /(\d{3}-\d{2}-\d{5})/,
+          ];
+          for (const pat of bizPatterns) {
+            const m = pHtml.match(pat);
+            if (m && m[1]) { p.bizNo = m[1].trim(); break; }
+          }
+
+          // 캐시 저장
+          if (p.sellerName) {
+            sellerCache[p.sellerName] = { sellerTel: p.sellerTel, sellerCeo: p.sellerCeo, bizNo: p.bizNo };
+          }
+        }
+
+        // 디버그 (첫 5건)
+        if (i < 5) {
+          console.log(`  [${i + 1}] ${pRes.status} ${pHtml.length}b | 판매자="${p.sellerName}" 전화="${p.sellerTel}" 대표="${p.sellerCeo}" 사업자="${p.bizNo}"`);
+
+          if (!p.sellerName && !p.sellerTel) {
+            const vendorKeys = [...pHtml.matchAll(/(?:vendor|seller|판매|업체|사업자)[^<]{0,100}/gi)];
+            console.log(`    vendor 패턴: ${vendorKeys.length}건`);
+            vendorKeys.slice(0, 3).forEach(v => console.log(`    "${v[0].substring(0, 80)}"`));
+
+            const phones = [...pHtml.matchAll(/[\d]{2,4}-[\d]{3,4}-[\d]{4}/g)];
+            console.log(`    전화번호 패턴: ${phones.length}건`);
+            phones.slice(0, 3).forEach(ph => console.log(`    "${ph[0]}"`));
+          }
+        }
+      } catch (e) {
+        if (i < 5) console.log(`  [${i + 1}] 오류: ${e.message}`);
       }
-      
+
+      // 딜레이
+      await sleep(500 + Math.random() * 500);
+
+      // 진행률
       if ((i + 1) % 10 === 0 || i === allProducts.length - 1) {
-        const filled = allProducts.filter(p => p.sellerTel).length;
-        console.log(`  [판매자정보] ${i + 1}/${allProducts.length} 처리 (전화번호 ${filled}건)`);
+        const filled = allProducts.filter(p => p.sellerName || p.sellerTel).length;
+        console.log(`  [진행] ${i + 1}/${allProducts.length} (판매자 ${filled}건)`);
       }
     }
-    
-    const filledCount = allProducts.filter(p => p.sellerTel).length;
-    console.log(`[2단계] 판매자 정보 완료: ${filledCount}/${allProducts.length}건 전화번호 확보`);
 
+    // ──────────────────────────────────────────
+    // 포인트 차감 & 응답
+    // ──────────────────────────────────────────
     const successResults = allProducts.filter(r => r.productName);
     const used = successResults.length;
     const newPts = user.points - used;
+
     db.prepare('UPDATE users SET points = ? WHERE id = ?').run(newPts, req.user.userId);
     db.prepare('INSERT INTO point_history (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(
-      req.user.userId, -used, 'use', `스마트스토어: ${keyword} (성공 ${used}건)`);
-    console.log(`완료: 총 ${allProducts.length}건 중 성공 ${used}건\n`);
-    res.json({ success: true, data: allProducts, usedPoints: used, remainingPoints: newPts });
+      req.user.userId, -used, 'use', `쿠팡: ${keyword} (${used}건)`
+    );
+
+    const withSeller = allProducts.filter(p => p.sellerName).length;
+    const withTel = allProducts.filter(p => p.sellerTel).length;
+
+    console.log(`\n[완료] ${allProducts.length}건 | 판매자 ${withSeller}건 | 전화번호 ${withTel}건`);
+    console.log(`${'='.repeat(60)}\n`);
+
+    res.json({
+      success: true,
+      data: allProducts,
+      usedPoints: used,
+      remainingPoints: newPts,
+    });
+
   } catch (error) {
-    console.error('스마트스토어 에러:', error.message);
-    res.status(500).json({ error: '데이터 추출 오류: ' + error.message });
+    console.error('쿠팡 에러:', error.message);
+    res.status(500).json({ error: '데이터 추출 중 오류: ' + error.message });
   }
 });
 
-
-// ============ 포인트/관리자 ============
+// ============================================================
+// 포인트 히스토리 API
+// ============================================================
 app.get('/api/history/points', requireLogin, (req, res) => {
-  res.json(db.prepare('SELECT * FROM point_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 50').all(req.user.userId));
-});
-app.get('/api/admin/users', requireLogin, (req, res) => {
-  if (!req.user.isAdmin) return res.status(403).json({ error: '권한 없음' });
-  res.json(db.prepare('SELECT id, username, points, is_admin, created_at FROM users ORDER BY created_at DESC').all());
-});
-app.post('/api/admin/points', requireLogin, (req, res) => {
-  if (!req.user.isAdmin) return res.status(403).json({ error: '권한 없음' });
-  const { userId, amount } = req.body;
-  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
-  if (!u) return res.status(404).json({ error: '사용자 없음' });
-  const np = u.points + amount;
-  if (np < 0) return res.status(400).json({ error: '포인트 부족' });
-  db.prepare('UPDATE users SET points = ? WHERE id = ?').run(np, userId);
-  db.prepare('INSERT INTO point_history (user_id, amount, type, description) VALUES (?, ?, ?, ?)').run(
-    userId, amount, amount > 0 ? 'charge' : 'deduct', amount > 0 ? '관리자 지급' : '관리자 차감');
-  res.json({ success: true, newPoints: np });
+  const history = db.prepare(
+    'SELECT * FROM point_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 50'
+  ).all(req.user.userId);
+  res.json(history);
 });
 
-app.listen(PORT, () => console.log(`서버: http://localhost:${PORT}`));
+// ============================================================
+// 서버 시작
+// ============================================================
+app.listen(PORT, () => {
+  console.log(`서버 실행 중: http://localhost:${PORT}`);
+});
